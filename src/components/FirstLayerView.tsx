@@ -7,11 +7,11 @@ export function svgPath(rings: Rings): string {
 
 interface Props {
   geometry: GeometryContext; job: ParsedJob; brim: BrimResult | null;
-  diameter: number; showBrim: boolean; showMissed: boolean; probe: boolean; fitKey: number;
+  diameter: number; showBrim: boolean; showMissed: boolean; probe: boolean; fitKey: number; demo?: boolean;
 }
 interface ViewBox { x: number; y: number; w: number; h: number }
 
-export default function FirstLayerView({ geometry, job, brim, diameter, showBrim, showMissed, probe, fitKey }: Props) {
+export default function FirstLayerView({ geometry, job, brim, diameter, showBrim, showMissed, probe, fitKey, demo }: Props) {
   const svg = useRef<SVGSVGElement>(null);
   const drag = useRef<{ x: number; y: number; box: ViewBox } | null>(null);
   const [view, setView] = useState<ViewBox>({ x: 0, y: 0, w: 200, h: 200 });
@@ -82,6 +82,12 @@ export default function FirstLayerView({ geometry, job, brim, diameter, showBrim
           <path d={`M${cursor.x - 0.8},${cursor.y}h1.6 M${cursor.x},${cursor.y - 0.8}v1.6`} stroke="#ffca87" strokeWidth="0.13" />
         </g>}
       </g>
+      {demo && <g fill="#bacbd0" fontSize="2.6" textAnchor="middle" pointerEvents="none" aria-label="Test plate: A large hole, B narrow-entry pocket, C small hole, D wide opening">
+        <text x="40" y="-70">A · 20 mm enclosed hole</text>
+        <text x="100" y="-70">B · 4 mm entry, 20 mm pocket</text>
+        <text x="40" y="-10">C · 4 mm enclosed hole</text>
+        <text x="100" y="-10">D · 20 mm open entrance</text>
+      </g>}
     </svg>
     <div className="view-instructions">Drag to pan <span>·</span> Scroll to zoom <span>·</span> Double-click to fit</div>
     {probe && <div className="probe-note">Circle gauge <strong>Ø {diameter} mm</strong><span>Move over the first layer</span></div>}

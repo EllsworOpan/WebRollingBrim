@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { parseGcode, arcPoints } from '../src/core/gcode';
 import { buildFootprint, generateBrim } from '../src/core/geometry';
-import { createInsertion, exportBytes } from '../src/core/export';
+import { createInsertion, exportBlockers, exportBytes } from '../src/core/export';
 import { DEFAULT_BRIM } from '../src/core/types';
 import { fixtureSource } from './fixtures';
 
@@ -29,13 +29,18 @@ function replay(source: string) {
 }
 
 describe('G-code preservation and state', () => {
-  for (const absolute of [false, true]) it(`restores all changed state with ${absolute ? 'absolute' : 'relative'} extrusion`, () => {
-    const source = fixtureSource(absolute), job = parseGcode(source);
+  it('standard mode preserves motion state and subsequent relative extrusion without resetting E', () => {
+    const source = fixtureSource(), job = parseGcode(source);
     expect(job.blockers).toEqual([]);
     const brim = generateBrim(buildFootprint(job), job, DEFAULT_BRIM);
     const added = createInsertion(job, brim);
     const prefix = new TextDecoder().decode(new TextEncoder().encode(source).slice(0, job.insertion!.byteOffset));
-    expect(replay(prefix + added)).toEqual(replay(prefix));
+    const original = replay(prefix), modified = replay(prefix + added);
+    expect(modified).toEqual({ ...original, e: modified.e });
+    expect(modified.e).toBeGreaterThan(original.e);
+    const next = '\nG1 X40 Y20 E1';
+    expect(replay(prefix + added + next).e - modified.e).toBeCloseTo(replay(prefix + next).e - original.e, 8);
+    expect(added).not.toMatch(/G92|SAVE_GCODE_STATE|RESTORE_GCODE_STATE/);
     expect(added).toContain(';TYPE:External perimeter');
     expect(added).not.toMatch(/NaN|Infinity/);
   });
@@ -64,22 +69,19 @@ describe('G-code preservation and state', () => {
     expect(job.insertion!.state.eKnown).toBe(false);
     expect(job.blockers).toEqual([]);
     const brim = generateBrim(buildFootprint(job), job, DEFAULT_BRIM);
-    const added = createInsertion(job, brim);
+    const added = createInsertion(job, brim, 'klipper');
     const prefix = 'G92 E123.45\n' + source.slice(0, source.indexOf('G1 X40'));
     expect(replay(prefix + added)).toEqual(replay(prefix));
     expect(added).not.toContain('G92 E');
     expect(added).toContain('RESTORE_GCODE_STATE NAME=ROLLING_BRIM_APP MOVE=0');
   });
 
-  it('restores Marlin coordinate and extrusion modes in the right order', () => {
-    const source = fixtureSource(true).replace('gcode_flavor = klipper', 'gcode_flavor = marlin2');
-    const job = parseGcode(source), brim = generateBrim(buildFootprint(job), job, DEFAULT_BRIM);
-    const added = createInsertion(job, brim);
-    const prefix = source.slice(0, source.indexOf('G1 X40'));
-    expect(replay(prefix + added)).toEqual(replay(prefix));
-    expect(added).toContain('G90\nM82\nG1 F1200');
-    expect(added).not.toMatch(/SAVE_GCODE_STATE|RESTORE_GCODE_STATE/);
-    expect(parseGcode(source.replace('G92 E0\n', '')).blockers.join()).toMatch(/G92 E reference/);
+  it('rejects absolute model extrusion in both export modes without losing the preview', () => {
+    const job = parseGcode(fixtureSource(true));
+    expect(job.paths.length).toBeGreaterThan(0);
+    const brim = generateBrim(buildFootprint(job), job, DEFAULT_BRIM);
+    expect(() => createInsertion(job, brim)).toThrow(/relative extrusion/i);
+    expect(() => createInsertion(job, brim, 'klipper')).toThrow(/relative extrusion/i);
   });
 
   for (const flavor of ['marlin', 'marlin2']) it(`exports Prusa-style startup and shutdown using only standard commands (${flavor})`, () => {
@@ -96,8 +98,11 @@ describe('G-code preservation and state', () => {
     const commands = added.split('\n').filter(line => line && !line.startsWith(';')).map(line => line.split(' ')[0]);
     expect(commands.every(command => ['G1', 'G90', 'G92', 'M83'].includes(command))).toBe(true);
     const prefix = new TextDecoder().decode(new TextEncoder().encode(source).slice(0, job.insertion!.byteOffset));
-    expect(replay(prefix + added)).toEqual(replay(prefix));
-    expect(replay(prefix + added + source.slice(prefix.length))).toEqual(replay(source));
+    const after = replay(prefix + added), end = replay(prefix + added + source.slice(prefix.length));
+    expect(after).toEqual({ ...replay(prefix), e: after.e });
+    expect(end).toEqual({ ...replay(source), e: end.e });
+    expect(parseGcode(source.replaceAll('G92 E0\n', '')).blockers).toEqual([]);
+    expect(exportBlockers(job, 'klipper').join()).toMatch(/explicitly marked klipper/);
   });
 
   it('handles compact commands without treating E as a numeric exponent', () => {
@@ -121,23 +126,142 @@ describe('G-code preservation and state', () => {
   });
 });
 
-describe('provided PrusaSlicer flexi-print fixture', () => {
-  it('parses 62 real layers, generates a brim and leaves the original program intact', () => {
-    const bytes = readFileSync(new URL('../examples/gcodes/Lagarto_v5.1_0.2mm_PLA_V2_1h7m.gcode', import.meta.url));
+describe('strict insertion and standard-G-code continuation checks', () => {
+  const withEnding = (ending: string) => fixtureSource().replace('; prusaslicer_config = begin', `;TYPE:Custom\n${ending}\n; prusaslicer_config = begin`);
+
+  it('takes the snapshot after skirt-specific changes and before the exact first model move', () => {
+    const source = fixtureSource().replace(';TYPE:External perimeter', ';TYPE:Skirt/Brim\nG1 X18 Y20 E0.2\nG1 X20 Y20 F1800\nM221 S97\nM204 S500\nG1 F1370\n;TYPE:External perimeter');
+    const job = parseGcode(source);
+    expect(exportBlockers(job)).toEqual([]);
+    expect(job.insertion!.state).toMatchObject({ x: 20, y: 20, z: 0.2, f: 1370, absoluteXYZ: true, absoluteE: false, retracted: 0 });
+    expect(job.insertion!.byteOffset).toBe(new TextEncoder().encode(source.slice(0, source.indexOf('G1 X40'))).length);
+    const added = createInsertion(job, generateBrim(buildFootprint(job), job, DEFAULT_BRIM));
+    expect(added).toContain('G1 F1370');
+    expect(added).not.toMatch(/M221|M204/);
+  });
+
+  it('does not move insertion later when the first model move lacks a known start position', () => {
+    const source = fixtureSource().replace('G1 X20 Y20 Z0.2 F1200', 'G1 Z0.2 F1200');
+    const job = parseGcode(source);
+    expect(job.insertion!.byteOffset).toBe(new TextEncoder().encode(source.slice(0, source.indexOf('G1 X40'))).length);
+    expect(job.blockers.join()).toMatch(/XYZ position and feed rate must be known/);
+  });
+
+  it('requires millimetres, absolute positioning and an unretracted insertion point', () => {
+    expect(parseGcode(fixtureSource().replace('G21\n', '')).blockers.join()).toMatch(/explicit G21/);
+    expect(parseGcode(fixtureSource().replace(';WIDTH:0.48', ';WIDTH:0.48\nG91')).blockers.join()).toMatch(/Absolute XYZ/);
+    expect(parseGcode(fixtureSource().replace(';WIDTH:0.48', ';WIDTH:0.48\nG1 E-0.8')).blockers.join()).toMatch(/outstanding retraction/);
+    expect(parseGcode(fixtureSource().replace('G1 X20 Y20 Z0.2 F1200', 'G1 X20 Y20 Z0.4 F1200')).blockers.join()).toMatch(/already be at first-layer Z/);
+  });
+
+  it('does not assume an opaque startup macro preserved the established modes', () => {
+    const source = fixtureSource().replace('G92 E0\n', 'PRINT_START\n');
+    expect(parseGcode(source).blockers.join()).toMatch(/explicit G21/);
+    const restored = source.replace('PRINT_START\n', 'PRINT_START\nG21\nG90\nM83\n');
+    expect(exportBlockers(parseGcode(restored))).toEqual([]);
+  });
+
+  it('blocks E-dependent continuations in standard mode but allows an eligible Klipper snapshot', () => {
+    for (const ending of ['M82\nG1 E100', 'CUSTOM_FINISH', 'SAVE_GCODE_STATE NAME=AFTER_PRINT', 'M810']) {
+      const job = parseGcode(withEnding(ending));
+      expect(job.blockers).toEqual([]);
+      expect(job.standardBlockers.length).toBeGreaterThan(0);
+      expect(exportBlockers(job, 'klipper')).toEqual([]);
+      const brim = generateBrim(buildFootprint(job), job, DEFAULT_BRIM);
+      expect(() => createInsertion(job, brim)).toThrow();
+      expect(createInsertion(job, brim, 'klipper')).toContain('SAVE_GCODE_STATE NAME=ROLLING_BRIM_APP');
+    }
+  });
+
+  it('accepts an original E reset before later absolute custom extrusion and restores the same resulting state', () => {
+    const source = withEnding('G92 E0\nM82\nG1 E2.5 F400');
+    const job = parseGcode(source);
+    expect(exportBlockers(job)).toEqual([]);
+    expect(job.extrusionResetLine).toBeGreaterThan(job.insertion!.line);
+    const brim = generateBrim(buildFootprint(job), job, DEFAULT_BRIM);
+    const result = new TextDecoder().decode(exportBytes(new TextEncoder().encode(source), job, brim));
+    expect(replay(result)).toEqual(replay(source));
+    expect(exportBlockers(parseGcode(withEnding('G92 E0\nCUSTOM_FINISH')))).toEqual([]);
+  });
+
+  it('checks E use after Marlin positioning-mode changes and permits a subsequent explicit M83', () => {
+    const ambiguous = withEnding('G90\nG1 E1').replace('gcode_flavor = klipper', 'gcode_flavor = marlin2');
+    expect(parseGcode(ambiguous).standardBlockers.join()).toMatch(/relative extrusion is not established/);
+    expect(exportBlockers(parseGcode(ambiguous.replace('G90\nG1 E1', 'G90\nM83\nG1 E1')))).toEqual([]);
+  });
+
+  it('protects the native snapshot name without preventing a compatible standard export', () => {
+    const source = fixtureSource().replace('G21', 'SAVE_GCODE_STATE NAME=ROLLING_BRIM_APP\nG21');
+    const job = parseGcode(source);
+    expect(exportBlockers(job)).toEqual([]);
+    expect(exportBlockers(job, 'klipper').join()).toMatch(/reserved/);
+  });
+});
+
+describe('explicit brim travel lift', () => {
+  it('reads zero and sub-0.4 mm values exactly, including filament overrides', () => {
+    expect(parseGcode(fixtureSource().replace('retract_lift = 0.4', 'retract_lift = 0')).settings.zHop).toBe(0);
+    expect(parseGcode(fixtureSource().replace('retract_lift = 0.4', 'retract_lift = 0.1')).settings.zHop).toBe(0.1);
+    expect(parseGcode(fixtureSource() + '; filament_retract_lift = 0\n').settings.zHop).toBe(0);
+    expect(parseGcode(fixtureSource() + '; filament_retract_lift = nil\n').settings.zHop).toBe(0.4);
+  });
+
+  it('emits no Z moves at zero and applies the exact selected positive lift without hidden minimums', () => {
+    const job = parseGcode(fixtureSource()), context = buildFootprint(job);
+    const zero = generateBrim(context, job, { ...DEFAULT_BRIM, travelLift: 0 });
+    const small = generateBrim(context, job, { ...DEFAULT_BRIM, travelLift: 0.1 });
+    for (const mode of ['standard', 'klipper'] as const) {
+      expect(createInsertion(job, zero, mode)).not.toMatch(/^G[01].*\bZ/m);
+      const zMoves = [...createInsertion(job, small, mode).matchAll(/^G1 Z([\d.]+)/gm)].map(match => Number(match[1]));
+      expect(new Set(zMoves)).toEqual(new Set([0.2, 0.3]));
+    }
+    expect(small.paths).toEqual(zero.paths);
+    expect(small.minutes).toBeGreaterThan(zero.minutes);
+    expect(zero.warnings.join()).toMatch(/lift is disabled/);
+  });
+});
+
+describe('optional local PrusaSlicer fixture', () => {
+  it.skipIf(!process.env.ROLLING_BRIM_TEST_GCODE)('generates a brim for a private file and preserves its original bytes', () => {
+    const bytes = readFileSync(process.env.ROLLING_BRIM_TEST_GCODE!);
     const start = performance.now();
-    const job = parseGcode(bytes.toString('utf8'), 'Lagarto.gcode', bytes.byteLength);
-    expect(job.layerCount).toBe(62);
+    const job = parseGcode(bytes.toString('utf8'), 'private-sample.gcode', bytes.byteLength);
+    expect(job.layerCount).toBeGreaterThan(0);
     expect(job.blockers).toEqual([]);
-    expect(job.settings.lineWidth).toBe(0.48);
-    expect(job.paths.some(path => path.width > 0.6)).toBe(true);
-    expect(job.insertion!.state.type).toBe('External perimeter');
+    expect(job.standardBlockers).toEqual([]);
+    expect(job.insertion).not.toBeNull();
     const context = buildFootprint(job);
     const brim = generateBrim(context, job, DEFAULT_BRIM);
     expect(brim.paths.length).toBeGreaterThan(0);
     expect(brim.length).toBeGreaterThan(100);
     const output = exportBytes(bytes, job, brim), offset = job.insertion!.byteOffset;
+    expect(createInsertion(job, brim)).not.toMatch(/SAVE_GCODE_STATE|RESTORE_GCODE_STATE|G92 E/);
     expect(Buffer.from(output.slice(0, offset)).equals(bytes.subarray(0, offset))).toBe(true);
     expect(Buffer.from(output.slice(offset + output.length - bytes.length)).equals(bytes.subarray(offset))).toBe(true);
     console.info(JSON.stringify({ sampleMs: Math.round(performance.now() - start), islands: context.islands.length, brimPaths: brim.paths.length, brimMm: Math.round(brim.length), unserved: brim.unserved.length, regionCounts: brim.regions }));
+  });
+});
+
+describe('large generated program', () => {
+  it('checks a 400,000-move file without retaining later layers in the footprint', () => {
+    const base = fixtureSource();
+    const secondLayer = base.indexOf(';LAYER_CHANGE', base.indexOf(';LAYER_CHANGE') + 1);
+    const prefix = base.slice(0, secondLayer);
+    const footer = base.slice(base.indexOf('; prusaslicer_config = begin'));
+    const moves = 'G1 X40 Y20 E0.001\nG1 X40 Y40 E0.001\nG1 X20 Y40 E0.001\nG1 X20 Y20 E0.001\n'.repeat(1000);
+    const layers = Array.from({ length: 100 }, (_, i) => {
+      const z = ((i + 2) * 0.2).toFixed(1);
+      return `;LAYER_CHANGE\n;Z:${z}\nG92 E0\nG1 Z${z}\n${moves}`;
+    }).join('');
+    const source = prefix + layers + footer, bytes = new TextEncoder().encode(source);
+    const job = parseGcode(source);
+    expect(job.lineCount).toBeGreaterThan(400_000);
+    expect(job.layerCount).toBe(101);
+    expect(job.paths).toEqual(parseGcode(base).paths);
+    expect(exportBlockers(job)).toEqual([]);
+    const brim = generateBrim(buildFootprint(job), job, DEFAULT_BRIM);
+    const result = exportBytes(bytes, job, brim), offset = job.insertion!.byteOffset;
+    expect(Buffer.from(result.slice(0, offset)).equals(Buffer.from(bytes.slice(0, offset)))).toBe(true);
+    expect(Buffer.from(result.slice(offset + result.length - bytes.length)).equals(Buffer.from(bytes.slice(offset)))).toBe(true);
   });
 });

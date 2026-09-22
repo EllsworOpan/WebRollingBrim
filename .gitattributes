@@ -5,3 +5,4 @@
 *.gco -text
 *.gc -text
 *.bgcode -text
+*.stl -text

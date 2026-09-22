@@ -133,6 +133,7 @@ export function validateBrimSettings(settings: BrimSettings, job: ParsedJob) {
   const ranges: [keyof BrimSettings, number, number][] = [
     ['diameter', 0.5, 100], ['width', 0.5, 40], ['gap', -0.2, 3],
     ['lineWidth', Math.max(job.settings.layerHeight, 0.2), 1.5], ['speed', 1, 150],
+    ['travelLift', 0, 100],
   ];
   for (const [key, min, max] of ranges) {
     const value = settings[key];
@@ -181,9 +182,11 @@ export function generateBrim(context: GeometryContext, job: ParsedJob, settings:
   for (const path of paths) { travel += Math.hypot(path[0].x - cursor.x, path[0].y - cursor.y); cursor = path.at(-1)!; }
   if (job.insertion) travel += Math.hypot(cursor.x - job.insertion.state.x, cursor.y - job.insertion.state.y);
   const minutes = (length / settings.speed + travel / job.settings.travelSpeed
-    + (paths.length + 1) * (2 * job.settings.zHop / job.settings.zSpeed
+    + (paths.length + 1) * (2 * settings.travelLift / job.settings.zSpeed
       + job.settings.retractLength / job.settings.retractSpeed + job.settings.retractLength / job.settings.unretractSpeed)) / 60;
   const warnings: string[] = [];
+  if (settings.travelLift === 0) warnings.push('Travel lift is disabled. Added travel moves stay at first-layer Z.');
+  else if (settings.travelLift < job.settings.layerHeight) warnings.push('Travel lift is smaller than the first-layer height. Inspect crossings of existing material.');
   if (!paths.length) warnings.push('No printable brim fits these settings. Try a smaller rolling diameter or a wider brim.');
   if (clippedArea > 0.05) warnings.push(`${clippedArea.toFixed(1)} mm² of brim was clipped to the printable bed.`);
   if (avoidedArea > 0.05) warnings.push('New brim paths avoid existing skirt, brim, and support material.');

@@ -28,16 +28,20 @@ export interface ParsedJob {
   bed: Ring; bounds: Bounds;
   insertion: { byteOffset: number; line: number; state: PrinterState } | null;
   warnings: string[]; blockers: string[];
+  standardBlockers: string[];
+  klipperBlockers: string[];
+  extrusionResetLine: number | null;
   newline: string;
 }
+export type ExportMode = 'standard' | 'klipper';
 export interface BrimSettings {
   diameter: number; width: number; gap: number;
   holes: boolean; pockets: boolean;
-  lineWidth: number; speed: number;
+  lineWidth: number; speed: number; travelLift: number;
 }
 export const DEFAULT_BRIM: BrimSettings = {
   diameter: 10, width: 5, gap: 0.1, holes: false, pockets: false,
-  lineWidth: 0.48, speed: 20,
+  lineWidth: 0.48, speed: 20, travelLift: 0.4,
 };
 export interface GeometryContext {
   model: Rings; auxiliary: Rings; islands: Polygon[]; bounds: Bounds;
