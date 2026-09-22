@@ -2,10 +2,20 @@ import { extrusionPerMm } from './gcode';
 import { validateBrimSettings } from './geometry';
 import type { BrimResult, ExportMode, ParsedJob } from './types';
 
-const n = (value: number, precision = 4) => {
+const decimal = (value: number): string => {
   if (!Number.isFinite(value)) throw new Error('A generated G-code value is not finite.');
-  return Number(value.toFixed(precision)).toString();
+  const [coefficient, exponent] = String(value).split('e');
+  if (exponent === undefined) return coefficient;
+  // Source coordinates/feed can have more precision than generated geometry.
+  // Restore them without rounding or emitting scientific notation into G-code.
+  const sign = coefficient.startsWith('-') ? '-' : '';
+  const [whole, fraction = ''] = coefficient.replace('-', '').split('.');
+  const digits = whole + fraction, point = whole.length + Number(exponent);
+  if (point <= 0) return `${sign}0.${'0'.repeat(-point)}${digits}`;
+  if (point >= digits.length) return sign + digits + '0'.repeat(point - digits.length);
+  return `${sign}${digits.slice(0, point)}.${digits.slice(point)}`;
 };
+const n = (value: number, precision = 4) => decimal(Number(value.toFixed(precision)));
 
 export function exportBlockers(job: ParsedJob, mode: ExportMode = 'standard'): string[] {
   if (mode === 'standard') return [...job.blockers, ...job.standardBlockers];
@@ -38,43 +48,59 @@ export function createInsertion(job: ParsedJob, brim: BrimResult, mode: ExportMo
   // Startup macros can leave an unknown E origin. Klipper saves it on the printer,
   // rather than substituting the interpreter's relative-extrusion accumulator.
   if (mode === 'klipper') lines.push('SAVE_GCODE_STATE NAME=ROLLING_BRIM_APP');
-  lines.push('G90', 'M83');
-  const retract = () => { if (p.retractLength > 0) lines.push(`G1 E-${n(p.retractLength, 5)} F${n(p.retractSpeed * 60)}`); };
-  const unretract = () => { if (p.retractLength > 0) lines.push(`G1 E${n(p.retractLength, 5)} F${n(p.unretractSpeed * 60)}`); };
-  const travel = (x: number, y: number) => {
+  // Eligibility already establishes G90 / M83. Leave these modes alone.
+  const position = { X: s.x, Y: s.y, Z: s.z };
+  let feed = s.f;
+  const move = (axes: Partial<Record<'X' | 'Y' | 'Z' | 'E', number>>, speed: number, exact = false) => {
+    const words: string[] = [];
+    for (const axis of ['X', 'Y', 'Z', 'E'] as const) {
+      if (axes[axis] === undefined) continue;
+      const value = exact ? axes[axis]! : Number(n(axes[axis]!, axis === 'E' ? 5 : 4));
+      if (!Number.isFinite(value)) throw new Error('A generated G-code value is not finite.');
+      // E is a relative action, never a modal value to deduplicate.
+      if (axis === 'E') { if (value !== 0) words.push(`E${decimal(value)}`); }
+      else if (position[axis] !== value) { words.push(`${axis}${decimal(value)}`); position[axis] = value; }
+    }
+    if (!words.length) return;
+    const nextFeed = Number(n(speed * 60));
+    if (feed !== nextFeed) { words.push(`F${decimal(nextFeed)}`); feed = nextFeed; }
+    lines.push(`G1 ${words.join(' ')}`);
+  };
+  const retract = () => move({ E: -p.retractLength }, p.retractSpeed);
+  const unretract = () => move({ E: p.retractLength }, p.unretractSpeed);
+  const travel = (x: number, y: number, exact = false) => {
+    const target = { X: exact ? x : Number(n(x)), Y: exact ? y : Number(n(y)) };
+    if (position.X === target.X && position.Y === target.Y) return;
+    retract();
     // Zero means no Z commands at all. Eligibility requires starting at first-layer Z.
-    if (brim.settings.travelLift > 0) lines.push(`G1 Z${n(liftedZ)} F${n(p.zSpeed * 60)}`);
-    lines.push(`G1 X${n(x)} Y${n(y)} F${n(p.travelSpeed * 60)}`);
-    if (brim.settings.travelLift > 0) lines.push(`G1 Z${n(s.z)} F${n(p.zSpeed * 60)}`);
+    if (brim.settings.travelLift > 0) move({ Z: liftedZ }, p.zSpeed);
+    move(target, p.travelSpeed, true);
+    if (brim.settings.travelLift > 0) move({ Z: s.z }, p.zSpeed, true);
+    unretract();
   };
   for (const [index, path] of brim.paths.entries()) {
     if (brim.transitions[index] === 'step') {
       // Geometry has checked this entire short connector against the printable
       // region. It adds no extrusion and does not change Z or retraction state.
       lines.push('; BRIM_STEP');
-      lines.push(`G1 X${n(path[0].x)} Y${n(path[0].y)} F${n(p.travelSpeed * 60)}`);
+      move({ X: path[0].x, Y: path[0].y }, p.travelSpeed);
     } else {
       lines.push('; BRIM_TRAVEL');
-      retract();
       travel(path[0].x, path[0].y);
-      unretract();
     }
-    lines.push(`G1 F${n(brim.settings.speed * 60)}`);
     for (let i = 1; i < path.length; i++) {
       const a = path[i - 1], b = path[i];
       const extrusion = Math.hypot(b.x - a.x, b.y - a.y) * bead;
-      if (extrusion < 0.000005) continue;
-      lines.push(`G1 X${n(b.x)} Y${n(b.y)} E${n(extrusion, 5)}`);
+      if (extrusion < 0.000005 || (position.X === Number(n(b.x)) && position.Y === Number(n(b.y)))) continue;
+      move({ X: b.x, Y: b.y, E: extrusion }, brim.settings.speed);
     }
   }
   lines.push('; BRIM_RETURN');
-  retract();
-  travel(s.x, s.y);
-  unretract();
+  travel(s.x, s.y, true);
   // Do not invent/reset E in standard mode. Original relative moves are unaffected;
   // the source's next G92 E (if any) removes the counter difference.
-  lines.push('G90', 'M83', `G1 F${n(s.f)}`);
   if (mode === 'klipper') lines.push('RESTORE_GCODE_STATE NAME=ROLLING_BRIM_APP MOVE=0');
+  else if (feed !== s.f) lines.push(`G1 F${decimal(s.f)}`);
   lines.push(`;TYPE:${s.type}`, `;WIDTH:${n(s.width, 6)}`, `;HEIGHT:${n(s.height, 6)}`, '; ROLLING_BRIM_END');
   return lines.join(job.newline) + job.newline;
 }

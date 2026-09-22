@@ -57,6 +57,57 @@ describe('G-code preservation and state', () => {
     expect(new TextDecoder().decode(output.slice(offset, offset + length))).not.toMatch(/(?<!\r)\n/);
   });
 
+  it('only changes modal feed when needed and never reasserts the established modes', () => {
+    const job = parseGcode(fixtureSource()), brim = generateBrim(buildFootprint(job), job, DEFAULT_BRIM);
+    for (const mode of ['standard', 'klipper'] as const) {
+      const added = createInsertion(job, brim, mode);
+      expect(added).not.toMatch(/^(G90|G91|M82|M83|G92)\b/m);
+      let feed = job.insertion!.state.f;
+      const position: Record<string, number> = { X: job.insertion!.state.x, Y: job.insertion!.state.y, Z: job.insertion!.state.z };
+      for (const line of added.split('\n').filter(line => line.startsWith('G1 '))) {
+        for (const [, axis, raw] of line.matchAll(/\b([XYZF])([-\d.]+)/g)) {
+          const value = Number(raw);
+          if (axis === 'F') { expect(value).not.toBe(feed); feed = value; }
+          else { expect(value).not.toBe(position[axis]); position[axis] = value; }
+        }
+      }
+      const feedOnly = added.split('\n').filter(line => /^G1 F/.test(line));
+      expect(feedOnly).toEqual(mode === 'standard' ? [`G1 F${job.insertion!.state.f}`] : []);
+      expect(added).toContain('; ROLLING_BRIM_BEGIN');
+      expect(added).toContain('; ROLLING_BRIM_END');
+    }
+  });
+
+  it('omits all feed commands when every motion already uses the active speed, preserving repeated relative actions', () => {
+    const source = fixtureSource(), job = parseGcode(source);
+    Object.assign(job.settings, { printSpeed: 20, travelSpeed: 20, zSpeed: 20, retractSpeed: 20, unretractSpeed: 20 });
+    const brim = generateBrim(buildFootprint(job), job, DEFAULT_BRIM);
+    const added = createInsertion(job, brim);
+    expect(added).not.toMatch(/^G1.*\bF/m);
+    // Both trips must retract/unretract, even when the commands are identical.
+    expect(added.match(/^G1 E-0.8$/gm)).toHaveLength(2);
+    expect(added.match(/^G1 E0.8$/gm)).toHaveLength(2);
+    const prefix = source.slice(0, source.indexOf('G1 X40'));
+    const after = replay(prefix + added);
+    expect(after).toEqual({ ...replay(prefix), e: after.e });
+  });
+
+  it('skips a stationary entry/return without retracting or lifting and restores precise source coordinates', () => {
+    const source = fixtureSource().replace('G1 X20 Y20 Z0.2 F1200', 'G1 X20.123456 Y0.0000001 Z0.2 F1200');
+    const job = parseGcode(source), brim = generateBrim(buildFootprint(job), job, DEFAULT_BRIM);
+    const added = createInsertion(job, brim), prefix = source.slice(0, source.indexOf('G1 X40'));
+    const after = replay(prefix + added);
+    expect(after).toEqual({ ...replay(prefix), e: after.e });
+    expect(added).toContain('Y0.0000001');
+    expect(added).not.toMatch(/^G1.*\d[eE][-+]?\d/m);
+
+    const simpleJob = parseGcode(fixtureSource());
+    const loop = { ...brim, paths: [[{ x: 20, y: 20 }, { x: 19, y: 20 }, { x: 19, y: 19 }, { x: 20, y: 20 }]], transitions: ['travel'] as const };
+    const stationary = createInsertion(simpleJob, { ...loop, transitions: [...loop.transitions] });
+    expect(stationary).not.toMatch(/^G1 E-|^G1 Z/m);
+    expect(stationary).not.toMatch(/^G1 F/m);
+  });
+
   it('rejects repeat processing, unsupported modes and incomplete metadata', () => {
     expect(parseGcode('; ROLLING_BRIM_BEGIN\n' + fixtureSource()).blockers.join()).toMatch(/already contains/);
     expect(parseGcode(fixtureSource().replace('G21', 'G20')).blockers.join()).toMatch(/Inch/);

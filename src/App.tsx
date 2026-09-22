@@ -1,7 +1,9 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowDownToLine, ArrowUpRight, Box, Check, ChevronDown, Circle, CircleHelp, FileCode2, Focus, Layers3, LoaderCircle, LockKeyhole, RotateCcw, ScanLine, Settings2, ShieldCheck, SlidersHorizontal, TriangleAlert, Upload, X } from 'lucide-react';
+import { ArrowUpRight, Box, Check, ChevronDown, Circle, CircleHelp, FileCode2, FileDiff, Focus, Layers3, LoaderCircle, LockKeyhole, RotateCcw, ScanLine, Settings2, ShieldCheck, SlidersHorizontal, TriangleAlert, Upload, X } from 'lucide-react';
 import FirstLayerView from './components/FirstLayerView';
-import { createInsertion, exportBlockers } from './core/export';
+import ExportReview from './components/ExportReview';
+import { exportBlockers } from './core/export';
+import { prepareExport, type PreparedExport } from './core/export-review';
 import { DEFAULT_BRIM, type BrimResult, type BrimSettings, type ExportMode, type LoadedJob, type WorkerRequest, type WorkerResponse } from './core/types';
 import sampleUrl from '../examples/gcodes/clearance-test-plate.gcode?url';
 import sampleModelUrl from '../examples/models/clearance-test-plate.stl?url';
@@ -48,6 +50,7 @@ export default function App() {
   const [loaded, setLoaded] = useState<LoadedJob | null>(null), [file, setFile] = useState<File | null>(null);
   const [brim, setBrim] = useState<BrimResult | null>(null), [settings, setSettings] = useState<BrimSettings>(DEFAULT_BRIM);
   const [exportMode, setExportMode] = useState<ExportMode>('standard');
+  const [review, setReview] = useState<PreparedExport | null>(null);
   const [status, setStatus] = useState(''), [error, setError] = useState(''), [toast, setToast] = useState('');
   const [view, setView] = useState<'3d' | '2d'>('3d'), [layer, setLayer] = useState(1), [fitKey, setFitKey] = useState(0);
   const [showBrim, setShowBrim] = useState(true), [showMissed, setShowMissed] = useState(true), [showTravel, setShowTravel] = useState(false), [probe, setProbe] = useState(false);
@@ -68,7 +71,7 @@ export default function App() {
     worker.current?.terminate();
     if (generationTimer.current) clearTimeout(generationTimer.current);
     const id = ++requestId.current;
-    setLoaded(null); setBrim(null); setFile(incoming); setError(''); setStatus('Opening G-code…'); setProbe(false); setExportMode('standard');
+    setLoaded(null); setBrim(null); setFile(incoming); setError(''); setStatus('Opening G-code…'); setProbe(false); setExportMode('standard'); setReview(null);
     setDemo(isDemo);
     if (isDemo) { setSettings(DEFAULT_BRIM); setView('2d'); }
     const instance = new Worker(new URL('./core/worker.ts', import.meta.url), { type: 'module' });
@@ -112,15 +115,18 @@ export default function App() {
       await loadFile(new File([blob], 'clearance-test-plate.gcode', { type: 'text/plain' }), true);
     } catch (reason) { setError((reason as Error).message); setStatus(''); }
   };
-  const exportGcode = () => {
+  const reviewGcode = () => {
     if (!loaded || !file || !brim || !sameSettings(settings, brim.settings)) return;
     try {
-      const added = createInsertion(loaded.job, brim, exportMode), offset = loaded.job.insertion!.byteOffset;
-      const result = new Blob([file.slice(0, offset), added, file.slice(offset)], { type: 'text/plain;charset=utf-8' });
-      const url = URL.createObjectURL(result); downloadUrls.current.push(url);
-      const link = document.createElement('a'); link.href = url; link.download = file.name.replace(/\.(gcode|gco|gc)$/i, '') + '_rolling_brim.gcode';
+      setReview(prepareExport(file, loaded.job, brim, exportMode));
+    } catch (reason) { setError((reason as Error).message); }
+  };
+  const downloadGcode = (prepared: PreparedExport) => {
+    try {
+      const url = URL.createObjectURL(prepared.output); downloadUrls.current.push(url);
+      const link = document.createElement('a'); link.href = url; link.download = prepared.name;
       document.body.append(link); link.click(); link.remove();
-      setToast('Download started. All original G-code lines are preserved.');
+      setToast('Download started from the reviewed output. All original lines are preserved.');
     } catch (reason) { setError((reason as Error).message); }
   };
   const blockers = loaded ? exportBlockers(loaded.job, exportMode) : [];
@@ -136,7 +142,7 @@ export default function App() {
     <input ref={input} className="visually-hidden" tabIndex={-1} aria-label="Open G-code file" type="file" accept=".gcode,.gco,.gc" onChange={event => { const incoming = event.target.files?.[0]; if (incoming) void loadFile(incoming); event.target.value = ''; }} />
     <header className="app-header">
       <div className="brand"><img src={`${import.meta.env.BASE_URL}favicon.svg`} alt="" /><div>Rolling Brim<span>FIRST LAYER, RECONSIDERED.</span></div><span className="version-tag">BETA</span></div>
-      <div className="header-actions"><span className="local-label"><LockKeyhole size={13} /> Local to your browser</span><button className="icon-button help-button" title="How Rolling Brim works" aria-label="How Rolling Brim works" onClick={() => setHelp(true)}><CircleHelp size={19} /></button><button className="button button-primary export-button" disabled={!canExport} onClick={exportGcode}><ArrowDownToLine size={17} /> Export G-code</button></div>
+      <div className="header-actions"><span className="local-label"><LockKeyhole size={13} /> Local to your browser</span><button className="icon-button help-button" title="How Rolling Brim works" aria-label="How Rolling Brim works" onClick={() => setHelp(true)}><CircleHelp size={19} /></button><button className="button button-primary export-button" disabled={!canExport} onClick={reviewGcode}><FileDiff size={17} /> Review export</button></div>
     </header>
 
     <div className="workbench">
@@ -215,6 +221,7 @@ export default function App() {
     </div>
     <footer className="app-footer"><span>ROLLING BRIM <span className="footer-divider">/</span> G-CODE WORKSPACE</span><span>PrusaSlicer text G-code <span className="footer-divider">·</span> All dimensions in mm</span></footer>
 
+    {review && <ExportReview review={review} onClose={() => setReview(null)} onDownload={downloadGcode} />}
     {dragging && <div className="drop-overlay"><div><Upload size={40} /><h2>Drop your G-code here</h2><p>We’ll read the first layer and take it from there.</p></div></div>}
     {toast && <div className="toast" role="status"><Check size={17} />{toast}</div>}
     {help && <div className="modal-backdrop" onClick={() => setHelp(false)}><section className="help-dialog" role="dialog" aria-modal="true" aria-labelledby="help-title" onClick={event => event.stopPropagation()}><button className="icon-button modal-close" aria-label="Close help" onClick={() => setHelp(false)} autoFocus><X size={20} /></button><span className="eyebrow">THE ROLLING BRIM</span><h2 id="help-title">Adhesion with room to move.</h2><p>A virtual circle decides which areas can receive brim. A larger circle skips narrow gaps, keeping delicate joints easier to free.</p><dl><div><dt>Rolling diameter</dt><dd>The size of the circle used to test access and clearance.</dd></div><div><dt>Brim width</dt><dd>The width of the added band, measured from the separation gap.</dd></div><div><dt>Enclosed holes</dt><dd>Allow brim inside sealed holes that have enough room for the circle.</dd></div><div><dt>Narrow-entry pockets</dt><dd>Lift the circle into roomy pockets it cannot enter from outside. Their narrow entrances remain subject to the same clearance rule.</dd></div><div><dt>Island coverage</dt><dd>An island is covered when a generated extrusion reaches its boundary at the selected separation gap. Highlighting is advisory; no connecting tabs are added.</dd></div></dl><p className="help-note">Use the first-layer view to inspect the result. Positive gap separates, zero touches, and negative gap overlaps. The 3D view shows extrusions; larger files use lightweight lines. The first-layer view shows deposited widths.</p><button className="button button-primary" onClick={() => setHelp(false)}>Back to the workspace</button></section></div>}

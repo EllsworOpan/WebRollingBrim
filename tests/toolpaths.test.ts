@@ -48,12 +48,11 @@ describe('outside-to-model brim paths', () => {
       const added = createInsertion(job, brim, mode);
       expect(retractions(added)).toBe(2); // enter the brim, then return to the model
       expect([...added.matchAll(/^G1 Z/gm)]).toHaveLength(4);
-      const steps = [...added.matchAll(/; BRIM_STEP\n([^\n]+)\n([^\n]+)\n([^\n]+)/g)];
+      const steps = [...added.matchAll(/; BRIM_STEP\n([^\n]+)\n([^\n]+)/g)];
       expect(steps).toHaveLength(10);
-      for (const [, move, speed, extrusion] of steps) {
-        expect(move).toMatch(/^G1 X[\d.-]+ Y[\d.-]+ F9000$/);
-        expect(speed).toBe('G1 F1200');
-        expect(extrusion).toMatch(/^G1 X.* E/);
+      for (const [, move, extrusion] of steps) {
+        expect(move).toMatch(/^G1(?: [XY][\d.-]+)+ F9000$/);
+        expect(extrusion).toMatch(/^G1(?: [XY][\d.-]+)+ E[\d.]+ F1200$/);
       }
     }
     let cursor: Point = job.insertion!.state, travel = 0;
