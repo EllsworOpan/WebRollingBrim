@@ -18,6 +18,7 @@ export function createInsertion(job: ParsedJob, brim: BrimResult, mode: ExportMo
   const blockers = exportBlockers(job, mode);
   if (blockers.length) throw new Error(blockers.join(' '));
   if (!job.insertion || !brim.paths.length) throw new Error('Generate a printable brim before exporting.');
+  if (brim.transitions.length !== brim.paths.length || brim.transitions[0] !== 'travel' || brim.transitions.some(kind => kind !== 'step' && kind !== 'travel')) throw new Error('The brim travel plan is incomplete. Regenerate the brim.');
   validateBrimSettings(brim.settings, job);
   const s = job.insertion.state, p = job.settings;
   const bead = extrusionPerMm(p, brim.settings.lineWidth);
@@ -28,6 +29,7 @@ export function createInsertion(job: ParsedJob, brim: BrimResult, mode: ExportMo
     `; rolling_diameter = ${n(brim.settings.diameter)}`,
     `; brim_width = ${n(brim.settings.width)}`,
     `; brim_gap = ${n(brim.settings.gap)}`,
+    '; path_order = outside_to_model',
     `; travel_lift = ${n(brim.settings.travelLift)}`,
     `; enclosed_holes = ${brim.settings.holes ? 'on' : 'off'}`,
     `; narrow_entry_pockets = ${brim.settings.pockets ? 'on' : 'off'}`,
@@ -45,10 +47,18 @@ export function createInsertion(job: ParsedJob, brim: BrimResult, mode: ExportMo
     lines.push(`G1 X${n(x)} Y${n(y)} F${n(p.travelSpeed * 60)}`);
     if (brim.settings.travelLift > 0) lines.push(`G1 Z${n(s.z)} F${n(p.zSpeed * 60)}`);
   };
-  for (const path of brim.paths) {
-    retract();
-    travel(path[0].x, path[0].y);
-    unretract();
+  for (const [index, path] of brim.paths.entries()) {
+    if (brim.transitions[index] === 'step') {
+      // Geometry has checked this entire short connector against the printable
+      // region. It adds no extrusion and does not change Z or retraction state.
+      lines.push('; BRIM_STEP');
+      lines.push(`G1 X${n(path[0].x)} Y${n(path[0].y)} F${n(p.travelSpeed * 60)}`);
+    } else {
+      lines.push('; BRIM_TRAVEL');
+      retract();
+      travel(path[0].x, path[0].y);
+      unretract();
+    }
     lines.push(`G1 F${n(brim.settings.speed * 60)}`);
     for (let i = 1; i < path.length; i++) {
       const a = path[i - 1], b = path[i];
@@ -57,6 +67,7 @@ export function createInsertion(job: ParsedJob, brim: BrimResult, mode: ExportMo
       lines.push(`G1 X${n(b.x)} Y${n(b.y)} E${n(extrusion, 5)}`);
     }
   }
+  lines.push('; BRIM_RETURN');
   retract();
   travel(s.x, s.y);
   unretract();

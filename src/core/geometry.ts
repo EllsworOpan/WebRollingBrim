@@ -1,4 +1,4 @@
-import { union, difference, intersect, inflatePaths, simplifyPaths, FillRule, JoinType, EndType } from 'clipper2-ts';
+import { union, difference, intersect, inflatePaths, simplifyPaths, Clipper64, ClipType, FillRule, JoinType, EndType } from 'clipper2-ts';
 import { extrusionPerMm } from './gcode';
 import type { Bounds, BrimResult, BrimSettings, GeometryContext, ParsedJob, Point, Polygon, Ring, Rings } from './types';
 
@@ -112,21 +112,112 @@ export function pathLength(path: Ring): number {
   return distance;
 }
 
-function orderedLoops(rings: Rings, start: Point): Rings {
-  const remaining = rings.map(ring => ring.slice()), paths: Rings = [];
-  let cursor = start;
+const distance = (a: Point, b: Point) => Math.hypot(b.x - a.x, b.y - a.y);
+const samePoint = (a: Point, b: Point) => distance(a, b) < 0.0001;
+
+/** Open clipping must not add a closing extrusion across excluded material. */
+function clipLines(paths: Rings, area: Rings, operation = ClipType.Intersection): Rings {
+  if (!paths.length) return [];
+  const clipper = new Clipper64(), result: Rings = [];
+  clipper.addOpenSubject(paths); clipper.addClip(area);
+  if (!clipper.execute(operation, RULE, [], result)) throw new Error('Could not clip brim toolpaths.');
+  return result;
+}
+
+/** Join fragments split only at the arbitrary starting vertex of a closed loop. */
+function stitchPaths(paths: Rings): Rings {
+  const remaining = paths.map(path => path.slice()), result: Rings = [];
   while (remaining.length) {
-    let bestPath = 0, bestVertex = 0, distance = Infinity;
-    remaining.forEach((ring, i) => ring.forEach((p, j) => {
-      const d = (p.x - cursor.x) ** 2 + (p.y - cursor.y) ** 2;
-      if (d < distance) { bestPath = i; bestVertex = j; distance = d; }
-    }));
-    const ring = remaining.splice(bestPath, 1)[0];
-    const ordered = [...ring.slice(bestVertex), ...ring.slice(0, bestVertex)];
-    ordered.push(ordered[0]);
-    paths.push(ordered); cursor = ordered[0];
+    let path = remaining.pop()!;
+    for (let i = remaining.length - 1; i >= 0 && !samePoint(path[0], path.at(-1)!); i--) {
+      let next = remaining[i];
+      if (samePoint(path.at(-1)!, next.at(-1)!)) next = next.slice().reverse();
+      if (samePoint(path.at(-1)!, next[0])) path.push(...next.slice(1));
+      else {
+        if (samePoint(path[0], next[0])) next = next.slice().reverse();
+        if (!samePoint(path[0], next.at(-1)!)) continue;
+        path = [...next.slice(0, -1), ...path];
+      }
+      remaining.splice(i, 1); i = remaining.length;
+    }
+    result.push(path);
   }
-  return paths;
+  return result;
+}
+
+/** Project the seam onto an edge, so adjacent loops need only a normal step. */
+function startNear(path: Ring, cursor: Point): Ring {
+  if (!samePoint(path[0], path.at(-1)!)) return distance(cursor, path[0]) <= distance(cursor, path.at(-1)!) ? path : path.slice().reverse();
+  const ring = path.slice(0, -1);
+  if (signedArea(ring) < 0) ring.reverse();
+  let best = 0, closest = ring[0], bestDistance = Infinity;
+  for (let i = 0; i < ring.length; i++) {
+    const a = ring[i], b = ring[(i + 1) % ring.length], dx = b.x - a.x, dy = b.y - a.y;
+    const t = Math.max(0, Math.min(1, ((cursor.x - a.x) * dx + (cursor.y - a.y) * dy) / (dx * dx + dy * dy || 1)));
+    const point = { x: a.x + t * dx, y: a.y + t * dy }, d = distance(cursor, point);
+    if (d < bestDistance) { best = i; closest = point; bestDistance = d; }
+  }
+  const rotated = [closest, ...ring.slice(best + 1), ...ring.slice(0, best + 1), closest];
+  return rotated.filter((point, i) => !i || !samePoint(point, rotated[i - 1]));
+}
+
+interface Contour { points: Ring; level: number }
+
+function planContours(free: Rings, area: Rings, width: number, lineWidth: number, spacing: number, start: Point) {
+  const paths: Rings = [], transitions: BrimResult['transitions'] = [];
+  // PrusaSlicer defines brim width and the inner loop using flow spacing.
+  // Keep one grid, including its half-spacing phase, instead of squeezing an
+  // extra contour into the fractional remainder at the outside edge.
+  const count = Math.max(0, Math.floor((width + 1e-8) / spacing));
+  if (count > 600) throw new Error('The brim needs too many extrusion passes. Increase line width or reduce brim width.');
+  // A small clipping tolerance accounts for the rounded polygon engine's 6 µm
+  // chord error. It prevents artificial fragments at coincident offset edges.
+  const safeArea = offset(area, -lineWidth * SCALE / 2 + ARC_TOLERANCE + 2);
+  const components = polygonsOf(safeArea).map(polygon => ({
+    clip: flatten(polygon), contours: [] as Contour[],
+  }));
+  let numberOfPaths = 0;
+  for (let level = 0; level < count; level++) {
+    // Erode the unrestricted allowed free space, NOT the bounded brim band.
+    // This gives one family of contours from the model/rolling boundary, with
+    // no second front advancing from the opposite edge of the band.
+    const contours = offset(free, -(level + 0.5) * spacing * SCALE);
+    for (const component of components) {
+      const clipped = stitchPaths(clipLines(contours.map(ring => [...ring, ring[0]]), component.clip));
+      for (const points of toMm(clipped)) {
+        if (pathLength(points) < lineWidth * (samePoint(points[0], points.at(-1)!) ? 3 : 1)) continue;
+        component.contours.push({ points, level });
+        if (++numberOfPaths > 10_000) throw new Error('The brim has too many disconnected toolpaths. Increase the rolling diameter.');
+      }
+    }
+  }
+  let cursor = start;
+  const remaining = components.filter(component => component.contours.length);
+  while (remaining.length) {
+    // Finish each separate printable region before travelling to another one.
+    const choices = remaining.map((component, index) => {
+      const level = Math.max(...component.contours.map(contour => contour.level));
+      const d = Math.min(...component.contours.filter(contour => contour.level === level).map(contour => distance(cursor, startNear(contour.points, cursor)[0])));
+      return { index, d };
+    });
+    choices.sort((a, b) => a.d - b.d);
+    const component = remaining.splice(choices[0].index, 1)[0];
+    let previousLevel = -1;
+    while (component.contours.length) {
+      const candidates = component.contours.map((contour, index) => {
+        const points = startNear(contour.points, cursor);
+        return { ...contour, points, index, d: distance(cursor, points[0]) };
+      });
+      const steps = candidates.filter(candidate => candidate.level === previousLevel - 1 && candidate.d <= spacing * 1.5 + 0.01).sort((a, b) => a.d - b.d);
+      const nextStep = steps.find(candidate => !clipLines(toInt([[cursor, candidate.points[0]]]), component.clip, ClipType.Difference).some(path => pathLength(path) > 2));
+      const highest = Math.max(...candidates.map(candidate => candidate.level));
+      const next = nextStep || candidates.filter(candidate => candidate.level === highest).sort((a, b) => a.d - b.d)[0];
+      paths.push(next.points); transitions.push(nextStep ? 'step' : 'travel');
+      component.contours.splice(next.index, 1);
+      cursor = next.points.at(-1)!; previousLevel = next.level;
+    }
+  }
+  return { paths, transitions };
 }
 
 export function validateBrimSettings(settings: BrimSettings, job: ParsedJob) {
@@ -150,8 +241,13 @@ export function generateBrim(context: GeometryContext, job: ParsedJob, settings:
   const allowed = merge(toInt([
     ...regions.outside, ...(settings.holes ? regions.holes : []), ...(settings.pockets ? regions.pockets : []),
   ]));
-  const band = subtract(offset(model, (settings.width + settings.gap) * SCALE), offset(model, settings.gap * SCALE));
-  let area = intersection(band, allowed);
+  const spacing = settings.lineWidth - job.settings.layerHeight * (1 - Math.PI / 4);
+  // The displayed/deposited bead is wider than its flow spacing. Preserve the
+  // half-spacing phase used by PrusaSlicer while clipping the FULL bead to the
+  // bed and existing material. Gap is nominal, as it is in PrusaSlicer.
+  const beadOverlap = (settings.lineWidth - spacing) / 2;
+  const free = subtract(allowed, offset(model, settings.gap * SCALE));
+  let area = intersection(offset(model, (settings.width + settings.gap + beadOverlap) * SCALE), offset(free, beadOverlap * SCALE));
   const originalArea = totalArea(area);
   if (job.bed.length >= 3) {
     const bed = toInt([job.bed]);
@@ -162,16 +258,7 @@ export function generateBrim(context: GeometryContext, job: ParsedJob, settings:
   const bedArea = totalArea(area);
   if (context.auxiliary.length) area = subtract(area, offset(toInt(context.auxiliary), 30));
   const avoidedArea = (bedArea - totalArea(area)) / SCALE ** 2;
-  const centerlines: Rings = [];
-  const spacing = settings.lineWidth - job.settings.layerHeight * (1 - Math.PI / 4);
-  let inner = offset(area, -settings.lineWidth * SCALE / 2);
-  for (let pass = 0; inner.length; pass++) {
-    if (pass >= 600) throw new Error('The brim needs too many extrusion passes. Increase line width or reduce brim width.');
-    for (const ring of inner) if (pathLength([...ring, ring[0]]) > settings.lineWidth * SCALE * 3) centerlines.push(ring);
-    inner = offset(inner, -spacing * SCALE);
-  }
-  if (centerlines.length > 10_000) throw new Error('The brim has too many disconnected toolpaths. Increase the rolling diameter.');
-  const paths = orderedLoops(toMm(centerlines), job.insertion?.state || context.model[0][0]);
+  const { paths, transitions } = planContours(free, area, settings.width, settings.lineWidth, spacing, job.insertion?.state || context.model[0][0]);
   const length = paths.reduce((sum, path) => sum + pathLength(path), 0);
   const filament = length * extrusionPerMm(job.settings, settings.lineWidth);
   // Test actual generated beads, including the configured gap, rather than the ideal polygon.
@@ -182,7 +269,7 @@ export function generateBrim(context: GeometryContext, job: ParsedJob, settings:
   for (const path of paths) { travel += Math.hypot(path[0].x - cursor.x, path[0].y - cursor.y); cursor = path.at(-1)!; }
   if (job.insertion) travel += Math.hypot(cursor.x - job.insertion.state.x, cursor.y - job.insertion.state.y);
   const minutes = (length / settings.speed + travel / job.settings.travelSpeed
-    + (paths.length + 1) * (2 * settings.travelLift / job.settings.zSpeed
+    + (transitions.filter(kind => kind === 'travel').length + 1) * (2 * settings.travelLift / job.settings.zSpeed
       + job.settings.retractLength / job.settings.retractSpeed + job.settings.retractLength / job.settings.unretractSpeed)) / 60;
   const warnings: string[] = [];
   if (settings.travelLift === 0) warnings.push('Travel lift is disabled. Added travel moves stay at first-layer Z.');
@@ -191,5 +278,5 @@ export function generateBrim(context: GeometryContext, job: ParsedJob, settings:
   if (clippedArea > 0.05) warnings.push(`${clippedArea.toFixed(1)} mm² of brim was clipped to the printable bed.`);
   if (avoidedArea > 0.05) warnings.push('New brim paths avoid existing skirt, brim, and support material.');
   if (unserved.length) warnings.push(`${unserved.length} first-layer ${unserved.length === 1 ? 'island has' : 'islands have'} no adjacent generated brim at the selected gap.`);
-  return { settings: { ...settings }, area: toMm(area), paths, unserved, length, filament, minutes, areaMm2: totalArea(area) / SCALE ** 2, regions: regions.counts, clippedArea, avoidedArea, warnings, computeMs: performance.now() - start };
+  return { settings: { ...settings }, area: toMm(area), paths, transitions, unserved, length, filament, minutes, areaMm2: totalArea(area) / SCALE ** 2, regions: regions.counts, clippedArea, avoidedArea, warnings, computeMs: performance.now() - start };
 }

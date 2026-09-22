@@ -49,6 +49,9 @@ export interface GeometryContext {
 export interface BrimResult {
   settings: BrimSettings;
   area: Rings; paths: Rings; unserved: Rings;
+  // One entry per extrusion path. A step is a short, non-extruding XY move
+  // within the printable region; a travel uses the configured retract/lift.
+  transitions: ('travel' | 'step')[];
   length: number; filament: number; minutes: number; areaMm2: number;
   regions: { outside: number; holes: number; pockets: number };
   clippedArea: number; avoidedArea: number;

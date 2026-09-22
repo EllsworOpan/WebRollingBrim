@@ -31,6 +31,8 @@ The isolated data directory keeps fixture generation separate from personal slic
 
 ## Tests and private samples
 
+`gcodes/Shape-Box_0.2mm_PLA_V2_40m.gcode` is the user-supplied PrusaSlicer box reference, preserved verbatim. It includes a separate skirt followed by eleven brim loops at approximately 0.437 mm spacing. Its brim transitions are short XY moves without retraction or lift. The toolpath regression checks that spacing, sequencing, and every loop's straight-edge positions (within 0.003 mm). It also measures the remaining corner approximation separately (about 0.12 mm maximum), without treating different seam locations as a geometry mismatch. This reference is used in tests, not bundled as a website demo. Its existing brim remains protected from overlap when opened normally in the app.
+
 `npm run check` covers all four toggle combinations through actual sliced first-layer geometry and exported G-code, using independent point-to-segment distances to check deposited beads. Additional analytic tests cover exact-fit thresholds, nested islands, connected chambers within a closed hole, pockets formed between disconnected parts, gap/width independence, and restoration after switching toggles off. A generated 400,000-move fixture exercises large-file parsing without an external model dependency.
 
 Keep personal or third-party G-code in `.local/gcodes/`, which is excluded from Git and Docker. Run the optional local regression against a compatible file:

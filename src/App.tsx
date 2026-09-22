@@ -150,8 +150,8 @@ export default function App() {
 
         <section className="settings-section"><div className="section-label"><span>01</span><h2>Shape the brim</h2></div>
           <NumberControl label="Rolling diameter" value={settings.diameter} min={0.5} max={50} step={0.5} onChange={value => update('diameter', value)} description="Larger circles stay out of tighter gaps." />
-          <NumberControl label="Brim width" value={settings.width} min={0.5} max={20} step={0.5} onChange={value => update('width', value)} description="How far the brim extends from its inner edge." />
-          <NumberControl label="Separation gap" value={settings.gap} min={-0.2} max={1} step={0.01} onChange={value => update('gap', value)} description={settings.gap < 0 ? 'Negative values overlap the model for a stronger bond.' : 'Space between the model and brim. Zero touches.'} />
+          <NumberControl label="Brim width" value={settings.width} min={0.5} max={20} step={0.5} onChange={value => update('width', value)} description="Nominal width, rounded down to whole line spacings." />
+          <NumberControl label="Separation gap" value={settings.gap} min={-0.2} max={1} step={0.01} onChange={value => update('gap', value)} description={settings.gap < 0 ? 'Negative values overlap the model for a stronger bond.' : 'Nominal gap, using PrusaSlicer’s spacing convention. Zero joins the brim to the model.'} />
         </section>
 
         <section className="settings-section regions-section"><div className="section-label"><span>02</span><h2>Choose where it goes</h2></div>
