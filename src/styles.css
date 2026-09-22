@@ -97,3 +97,7 @@
   .review-footer > span { display: none; }
   .diff-filenames { font-size: 10px; }
 }
+.outline-control{display:flex;align-items:center;gap:7px;flex-shrink:0;font-size:11px;color:#b5c5cc;cursor:pointer;white-space:nowrap}
+.outline-control input{accent-color:var(--accent);cursor:pointer;margin:0}
+@media(max-width:1050px){.layer-bar:has(.outline-control){flex-wrap:wrap;gap:10px 16px;padding-top:12px;padding-bottom:12px}.layer-bar:has(.outline-control) .first-layer-caption{order:4;flex-basis:100%}.outline-control{margin-left:auto}}
+@media(max-width:430px){.outline-control{font-size:10px}}

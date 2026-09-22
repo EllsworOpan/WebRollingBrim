@@ -42,7 +42,7 @@ The workflow checks the code and geometry before publishing. It handles both rep
 1. Open a plain-text PrusaSlicer `.gcode` file or use the original holes & pockets test plate.
 2. Adjust **rolling diameter**, **brim width**, and **separation gap**. Updates run in a Web Worker.
 3. Optionally enable **enclosed holes** and **narrow-entry pockets** independently.
-4. Inspect the **First layer** view. Pan, zoom, toggle brim visibility, and use the circle gauge to compare clearances. Uncovered connected islands are highlighted; no connectors are added automatically.
+4. Inspect the **First layer** view. **Extrusion outlines** is on by default: individual model, auxiliary and brim passes have dark edges so their spacing and direction are visible when zoomed in. The edges are part of each bead's actual displayed width, not extra gaps or extra material. Turn the checkbox off for the solid footprint view. Pan, zoom, toggle brim visibility, and use the circle gauge to compare clearances. Uncovered connected islands are highlighted; no connectors are added automatically.
 5. Open **Review export** for a Git-style diff: green `+` lines, unchanged context, original/export line numbers, and added/removed/changed counts. Switch between unified and side-by-side layouts, jump to either end of the insertion, or enable **Full file** to inspect any original line. Large files are indexed by byte offset and shown in pages of 250 lines.
 6. **Download G-code** saves the exact output prepared for that review. A marked block prints after any already-completed skirt and immediately before the first supported model extrusion. Close the review to adjust settings; the next review prepares a fresh output.
 

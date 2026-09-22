@@ -55,6 +55,7 @@ export default function App() {
   const [status, setStatus] = useState(''), [error, setError] = useState(''), [toast, setToast] = useState('');
   const [view, setView] = useState<'3d' | '2d'>('3d'), [layer, setLayer] = useState(1), [fitKey, setFitKey] = useState(0);
   const [showBrim, setShowBrim] = useState(true), [showMissed, setShowMissed] = useState(true), [showTravel, setShowTravel] = useState(false), [probe, setProbe] = useState(false);
+  const [outlines, setOutlines] = useState(true);
   const [dragging, setDragging] = useState(false), [help, setHelp] = useState(false);
   const [demo, setDemo] = useState(false);
   const input = useRef<HTMLInputElement>(null), worker = useRef<Worker | null>(null), requestId = useRef(0);
@@ -194,7 +195,7 @@ export default function App() {
         <div className={`viewer-surface ${stale ? 'is-updating' : ''}`}>
           {loaded && file ? <>
             <div className={`view-container ${view !== '3d' ? 'hidden-view' : ''}`}><Suspense fallback={<div className="viewer-loading"><LoaderCircle className="spin" size={20} />Starting viewer…</div>}><GcodeView file={file} job={loaded.job} geometry={loaded.geometry} brim={brim} layer={layer} showBrim={showBrim} showTravel={showTravel} fitKey={fitKey} /></Suspense></div>
-            {view === '2d' && <FirstLayerView geometry={loaded.geometry} job={loaded.job} brim={brim} diameter={settings.diameter} showBrim={showBrim} showMissed={showMissed} probe={probe} fitKey={fitKey} demo={demo} />}
+            {view === '2d' && <FirstLayerView geometry={loaded.geometry} job={loaded.job} brim={brim} diameter={settings.diameter} showBrim={showBrim} showMissed={showMissed} outlines={outlines} probe={probe} fitKey={fitKey} demo={demo} />}
             <div className="viewer-heading"><span className="eyebrow">{view === '2d' ? 'FIRST-LAYER INSPECTION' : 'TOOLPATH PREVIEW'}</span><span>{view === '2d' ? `Z ${loaded.job.firstLayerZ.toFixed(2)} mm · ${loaded.geometry.islands.length} islands` : `${loaded.job.slicer} · ${loaded.job.flavor}`}</span></div>
             <div className="viewer-legend"><span><i className="swatch model-swatch" />Model</span><button onClick={() => setShowBrim(!showBrim)} className={showBrim ? '' : 'muted'} aria-pressed={showBrim}><i className="swatch brim-swatch" />Rolling brim</button>{view === '2d' && <><span><i className="swatch auxiliary-swatch" />Existing paths</span>{!!brim?.unserved.length && <button onClick={() => setShowMissed(!showMissed)} aria-pressed={showMissed} className={showMissed ? '' : 'muted'}><i className="swatch missed-swatch" />Uncovered ({brim.unserved.length})</button>}</>}</div>
           </> : <div className="empty-state"><EmptyIllustration /><span className="eyebrow">A LITTLE MORE HOLD. A LOT LESS HASSLE.</span><h1>Give your print a better start.</h1><p>Roll past the tight gaps. Keep the parts that matter<br className="desktop-break" /> anchored with a brim you can actually remove.</p><button className="button button-primary" onClick={() => input.current?.click()} disabled={!!status}><Upload size={17} /> Open G-code</button><span className="drop-hint">or drop a PrusaSlicer file anywhere</span><button className="sample-link" onClick={() => void loadSample()} disabled={!!status}>Try the holes & pockets test plate <ArrowUpRight size={14} /></button><div className="empty-local"><LockKeyhole size={13} />Your file stays in this browser. No upload required.</div></div>}
@@ -203,7 +204,7 @@ export default function App() {
 
         <div className="layer-bar">
           {view === '3d' ? <><div className="layer-title"><Layers3 size={16} /><span>Layers</span></div><input aria-label="Visible layer" type="range" min={1} max={loaded?.job.layerCount || 1} value={layer} disabled={!loaded} onChange={event => setLayer(Number(event.target.value))} /><span className="layer-count"><strong>{loaded ? layer : '—'}</strong> / {loaded?.job.layerCount || '—'}</span><label className="travel-control"><input type="checkbox" checked={showTravel} onChange={event => setShowTravel(event.target.checked)} />Travel moves</label></>
-            : <><div className="layer-title"><ScanLine size={16} /><span>First layer</span></div><span className="first-layer-caption">Actual extrusion widths · one-layer brim</span><span className="layer-count">{loaded ? `${loaded.job.settings.layerHeight.toFixed(2)} mm` : '—'}</span></>}
+            : <><div className="layer-title"><ScanLine size={16} /><span>First layer</span></div><span className="first-layer-caption">{outlines ? 'Dark edges are part of each extrusion.' : 'Actual extrusion widths · one-layer brim'}</span><label className="outline-control" title="Distinguish individual extrusion passes. Dark edges are a visual guide, not gaps between the lines."><input type="checkbox" checked={outlines} onChange={event => setOutlines(event.target.checked)} />Extrusion outlines</label><span className="layer-count">{loaded ? `${loaded.job.settings.layerHeight.toFixed(2)} mm` : '—'}</span></>}
         </div>
 
         <div className="result-panel">
