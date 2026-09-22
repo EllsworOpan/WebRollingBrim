@@ -101,3 +101,4 @@
 .outline-control input{accent-color:var(--accent);cursor:pointer;margin:0}
 @media(max-width:1050px){.layer-bar:has(.outline-control){flex-wrap:wrap;gap:10px 16px;padding-top:12px;padding-bottom:12px}.layer-bar:has(.outline-control) .first-layer-caption{order:4;flex-basis:100%}.outline-control{margin-left:auto}}
 @media(max-width:430px){.outline-control{font-size:10px}}
+.app-footer a{color:#9cb2bd;text-underline-offset:3px}.app-footer a:hover{color:var(--accent)}

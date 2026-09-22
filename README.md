@@ -4,6 +4,10 @@ A browser-based workbench for adding a single-layer rolling brim directly to Pru
 
 Files stay in the browser. No account, API key, backend, or printer connection is required.
 
+Separate controls set the rolling-circle diameter, brim width and model gap. Enclosed holes and narrow-entry pockets have independent toggles. The first-layer view shows individual extrusion outlines, and a Git-style export review shows the exact added commands before download.
+
+**MIT licensed.** See [License](#license) for permissions and third-party notices. This is an independent project, not affiliated with or endorsed by Prusa Research.
+
 ## Safety and liability disclaimer
 
 **Free, experimental tool — use at your own risk.** Rolling Brim edits G-code. You are responsible for reviewing and approving the exported file for your printer before running it. Preview and export checks cannot guarantee safe operation. Keep the original and supervise your first test.
@@ -12,30 +16,72 @@ This tool and its output are provided as is, without warranty. To the extent per
 
 ## Run with Docker
 
+Install Docker with Docker Compose (Docker Desktop on Windows/macOS), clone or download this repository, and run from its root directory. Node.js does not need to be installed on the host.
+
 ```sh
 docker compose up --build -d
 ```
 
-Open **http://localhost:8080**. Stop with `docker compose down`. Set the `PORT` environment variable to change the host port. The container serves the production build through Nginx and binds to the local machine only.
+Open **http://localhost:8080**. After pulling changes, rerun `docker compose up --build -d`. Stop with `docker compose down`; inspect status with `docker compose ps` and logs with `docker compose logs --tail=100`.
+
+The container serves the production build through Nginx and binds to the local machine only. To use another host port, create an ignored `.env` file containing `PORT=8081`, then rerun the Compose command. No volumes, database or persistent server data are required. Docker is the local test/deployment option; GitHub Pages serves the built static files directly and does not run Docker.
 
 ## Develop locally
 
-Requires Node.js 24 and npm.
+Requires Node.js 24 and npm. From the repository root:
 
 ```sh
 npm ci
 npm run dev
 ```
 
-Open the URL printed by Vite. `npm run build` creates `dist/`; `npm run preview` serves that build. `npm run check` runs TypeScript checking and the regression tests.
+Open the URL printed by Vite (normally `http://localhost:5173`). `npm run build` creates `dist/`; `npm run preview` serves that build. `npm run check` verifies license notices, checks TypeScript, and runs the regression tests. The optional private-file test is skipped unless `ROLLING_BRIM_TEST_GCODE` is set; see [the fixture guide](examples/README.md).
+
+The development and preview commands listen on all network interfaces for local testing. Add `-- --host 127.0.0.1` to either npm command to restrict it to your own machine. Use a static host or the Docker production build for deployment.
+
+## Push this checkout to GitHub
+
+This checkout already has Git history and a `main` branch. Create an **empty** GitHub repository without adding a README, license or `.gitignore` there; those files are included here. Substitute your repository URL below:
+
+```sh
+git remote add origin https://github.com/YOUR_GITHUB_USER/YOUR_REPOSITORY.git
+git push -u origin main
+```
+
+If `origin` is already configured, inspect it with `git remote -v` and skip the `remote add` command when it is correct. For a fresh copy of an already published repository, use `git clone` instead.
+
+Keep private or third-party samples in `.local/`. Git and Docker exclude that directory, including its private history backup. Commit the lockfile and the supplied original fixtures; do not commit `node_modules/`, `dist/`, `.env` files or personal G-code. The previous lizard sample is absent from the publishable Git history and the deployed app.
 
 ## Deploy on GitHub Pages
 
-1. Put this project in a GitHub repository with a `main` branch.
-2. In **Settings → Pages → Build and deployment**, select **GitHub Actions**.
-3. Push to `main`, or run the included **Verify and deploy to GitHub Pages** workflow.
+1. Push the repository using the instructions above. A **public** repository can use GitHub Pages on GitHub Free; private-repository availability depends on your GitHub plan.
+2. In the repository's **Settings → Pages → Build and deployment → Source**, select **GitHub Actions**.
+3. Open **Actions → Verify and deploy to GitHub Pages → Run workflow**, select `main`, and run it. Later pushes to `main` deploy automatically after checks pass. If the first push ran before Pages was enabled, rerun the workflow after step 2.
+4. Open the published URL shown in **Settings → Pages** or the workflow's `github-pages` deployment. A project repository normally uses `https://YOUR_GITHUB_USER.github.io/YOUR_REPOSITORY/`.
 
-The workflow checks the code and geometry before publishing. It handles both repository Pages URLs (`/<repository>/`) and user/organization Pages URLs (`/`). For a custom domain, set the workflow's build `BASE_PATH` to `/` and configure the domain in Pages. Docker always builds with `/`.
+The included [Pages workflow](.github/workflows/pages.yml) installs the locked dependencies, runs the checks, builds `dist/`, and uploads/deploys only those static files. Pull requests and manual runs on other branches are checked and built without deploying. No personal access token, API key, separate hosting service, or `gh-pages` branch is needed; the deployment uses GitHub's built-in token. See [GitHub's workflow documentation](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages).
+
+The workflow automatically uses `/<repository>/` for project sites and `/` for repositories named `<owner>.github.io`. Asset, Web Worker, demo download and license links respect this path.
+
+### Custom domains and other static hosts
+
+For a custom domain, add a repository **Actions variable** named `PAGES_BASE_PATH` with the value `/` under **Settings → Secrets and variables → Actions → Variables**. Configure the domain and DNS in **Settings → Pages**, enable HTTPS when available, then rerun the workflow. Follow [GitHub's custom-domain instructions](https://docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site/managing-a-custom-domain-for-your-github-pages-site). For any other path override, include both the leading and trailing `/`.
+
+Any static host can serve the entire `dist/` directory. The default build is for `/`. To build for a subdirectory, set `BASE_PATH` before building:
+
+```sh
+# Bash / macOS / Linux
+BASE_PATH=/rolling-brim/ npm run build
+```
+
+```powershell
+# PowerShell
+$env:BASE_PATH = '/rolling-brim/'
+npm run build
+Remove-Item Env:BASE_PATH
+```
+
+Upload all of `dist/`, including `assets/`, `LICENSE.txt` and `THIRD_PARTY_NOTICES.txt`. No server-side routes or application backend are needed. Docker always builds for `/`.
 
 ## Workflow
 
@@ -98,3 +144,13 @@ The box command regression compares extrusion per distance, 20 mm/s brim feeds, 
 - SVG for accurate first-layer inspection; no external fonts, analytics, file uploads, or runtime services.
 
 Tests cover original-byte preservation, relative-E continuation and original resets, optional Klipper state restoration, exact insertion state after skirt settings, unknown state rejection, zero/exact travel lift, original PrusaSlicer sample parsing and generation, hole/pocket independence, too-small holes, width independence, positive gaps, bed clipping, and existing-path exclusion. Toolpath tests check outside-to-model order, uniform spacing against the supplied PrusaSlicer box, short connections without retraction, separate regions, open clipped contours, and motion-time accounting. The sample button uses the original clearance test plate. See [examples/README.md](examples/README.md) for a visual toggle guide, model provenance, reproduction commands, and optional private-file testing. The lizard is not bundled with the site.
+
+## License
+
+Rolling Brim's original application code, documentation, and original clearance-test-plate assets are licensed under the [MIT License](LICENSE), copyright © 2026 EllsworOpan. MIT permits use, modification and redistribution, including commercial use, while requiring the copyright and license notice to be retained. The software is provided without warranty; the safety notice above explains the practical limitations of edited G-code.
+
+Third-party dependencies retain their own licenses. Runtime dependencies currently use MIT (`gcode-preview`, Three.js, React, React DOM, Scheduler and lil-gui), ISC (`lucide-react`, including its Feather attribution), and Boost Software License 1.0 (`clipper2-ts`). Full notices are in [public/THIRD_PARTY_NOTICES.txt](public/THIRD_PARTY_NOTICES.txt) and are included in every build, alongside the app's MIT license. Both are linked in the website footer. Development tools retain the licenses in their own packages.
+
+When updating dependencies, run `npm ci` after updating the lockfile, then `npm run licenses` and commit the updated public notice files. `npm run check` and `npm run build` reject stale notices. The generator copies the app license from the root `LICENSE` and collects the installed runtime packages' license text and Clipper's source copyright notices.
+
+The app's license does not grant rights to models or G-code supplied by its users. Export preserves the original file's notices and does not relicense it. See [examples/README.md](examples/README.md) for fixture provenance; the third-party lizard is not distributed here.

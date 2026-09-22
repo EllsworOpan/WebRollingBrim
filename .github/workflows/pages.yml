@@ -16,8 +16,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -25,19 +25,23 @@ jobs:
       - run: npm run check
       - name: Build with the repository's Pages path
         shell: bash
+        env:
+          PAGES_BASE_PATH: ${{ vars.PAGES_BASE_PATH }}
         run: |
           REPOSITORY_NAME="${GITHUB_REPOSITORY#*/}"
-          if [[ "$REPOSITORY_NAME" == *.github.io ]]; then
+          if [[ -n "$PAGES_BASE_PATH" ]]; then
+            BASE_PATH="$PAGES_BASE_PATH" npm run build
+          elif [[ "$REPOSITORY_NAME" == *.github.io ]]; then
             BASE_PATH=/ npm run build
           else
             BASE_PATH="/$REPOSITORY_NAME/" npm run build
           fi
-      - uses: actions/upload-pages-artifact@v3
-        if: github.event_name != 'pull_request'
+      - uses: actions/upload-pages-artifact@v4
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         with:
           path: dist
   deploy:
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     permissions:

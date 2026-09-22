@@ -223,7 +223,7 @@ export default function App() {
       </main>
     </div>
     <SafetyNotice />
-    <footer className="app-footer"><span>ROLLING BRIM <span className="footer-divider">/</span> G-CODE WORKSPACE</span><span>PrusaSlicer text G-code <span className="footer-divider">·</span> All dimensions in mm</span></footer>
+    <footer className="app-footer"><span>ROLLING BRIM <span className="footer-divider">/</span> G-CODE WORKSPACE</span><span><a href={`${import.meta.env.BASE_URL}LICENSE.txt`} target="_blank" rel="noopener noreferrer">MIT license</a><span className="footer-divider">·</span><a href={`${import.meta.env.BASE_URL}THIRD_PARTY_NOTICES.txt`} target="_blank" rel="noopener noreferrer">Third-party notices</a><span className="footer-divider">·</span>All dimensions in mm</span></footer>
 
     {review && <ExportReview review={review} onClose={() => setReview(null)} onDownload={downloadGcode} />}
     {dragging && <div className="drop-overlay"><div><Upload size={40} /><h2>Drop your G-code here</h2><p>We’ll read the first layer and take it from there.</p></div></div>}

@@ -2,6 +2,7 @@
   "name": "rolling-brim",
   "private": true,
   "version": "0.1.0",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
@@ -9,7 +10,10 @@
     "preview": "vite preview --host 0.0.0.0",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "tsc -b && vitest run"
+    "check": "npm run licenses:check && tsc -b && vitest run",
+    "licenses": "node scripts/update-notices.mjs",
+    "licenses:check": "node scripts/update-notices.mjs --check",
+    "prebuild": "npm run licenses:check"
   },
   "dependencies": {
     "clipper2-ts": "2.0.1-18",
