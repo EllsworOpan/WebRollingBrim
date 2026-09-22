@@ -78,6 +78,65 @@ describe('G-code preservation and state', () => {
     }
   });
 
+  for (const next of ['G1 X40 Y20 E1 F950', 'G1 X40 Y20 E1 F1200', 'G1X40Y20E1F950']) {
+    it(`leaves the next original move to set its own feed: ${next}`, () => {
+      const source = fixtureSource().replace('G1 X40 Y20 E1', next);
+      const job = parseGcode(source), brim = generateBrim(buildFootprint(job), job, DEFAULT_BRIM);
+      const expectedFeed = next.endsWith('1200') ? 1200 : 950;
+      expect(job.insertion!.state.f).toBe(1200);
+      expect(job.insertion!.nextMoveFeed).toBe(expectedFeed);
+      const added = createInsertion(job, brim);
+      expect(added).not.toMatch(/^G1 F/m);
+      const offset = job.insertion!.byteOffset, originalBytes = new TextEncoder().encode(source);
+      const prefix = new TextDecoder().decode(originalBytes.slice(0, offset));
+      // Canonical spelling of the same original command lets the independent
+      // replay oracle check both spaced and compact input without sharing parsing code.
+      const continuation = `G1 X40 Y20 E1 F${expectedFeed}\nG1 X40 Y40 E1\n`;
+      const afterBrim = replay(prefix + added), original = replay(prefix + continuation);
+      const resumed = replay(prefix + added + continuation);
+      expect(afterBrim.f).not.toBe(job.insertion!.state.f);
+      expect(resumed).toEqual({ ...original, e: resumed.e });
+      expect(resumed.f).toBe(expectedFeed);
+      expect(resumed.e - afterBrim.e).toBeCloseTo(2, 8);
+      const output = exportBytes(originalBytes, job, brim);
+      expect(output.slice(0, offset)).toEqual(originalBytes.slice(0, offset));
+      expect(output.slice(offset + output.length - originalBytes.length)).toEqual(originalBytes.slice(offset));
+    });
+  }
+
+  for (const next of ['G1 X40 Y20 E1 ; F950 is only a comment', 'G1 X40 Y20 E1\nG1 F950']) {
+    it(`restores the feed when the first resumed motion still needs it: ${next}`, () => {
+      const source = fixtureSource().replace('G1 X40 Y20 E1', next);
+      const job = parseGcode(source), brim = generateBrim(buildFootprint(job), job, DEFAULT_BRIM);
+      expect(job.insertion!.nextMoveFeed).toBeNull();
+      const added = createInsertion(job, brim);
+      expect(added).toMatch(/^G1 F1200$/m);
+      const prefix = new TextDecoder().decode(new TextEncoder().encode(source).slice(0, job.insertion!.byteOffset));
+      const original = replay(prefix + 'G1 X40 Y20 E1');
+      const resumed = replay(prefix + added + 'G1 X40 Y20 E1');
+      expect(resumed).toEqual({ ...original, e: resumed.e });
+    });
+  }
+
+  it('does not treat a zero or negative feed as proof that restoration can be skipped', () => {
+    for (const feed of [0, -500]) {
+      const job = parseGcode(fixtureSource().replace('G1 X40 Y20 E1', `G1 X40 Y20 E1 F${feed}`));
+      expect(job.insertion!.nextMoveFeed).toBeNull();
+    }
+  });
+
+  it('keeps the optional native snapshot intact when the next move has a feed', () => {
+    const source = fixtureSource().replace('G1 X40 Y20 E1', 'G1 X40 Y20 E1 F950');
+    const job = parseGcode(source), brim = generateBrim(buildFootprint(job), job, DEFAULT_BRIM);
+    const added = createInsertion(job, brim, 'klipper');
+    expect(added).not.toMatch(/^G1 F/m);
+    expect(added).toContain('RESTORE_GCODE_STATE NAME=ROLLING_BRIM_APP MOVE=0');
+    const prefix = new TextDecoder().decode(new TextEncoder().encode(source).slice(0, job.insertion!.byteOffset));
+    expect(replay(prefix + added)).toEqual(replay(prefix));
+    const next = 'G1 X40 Y20 E1 F950';
+    expect(replay(prefix + added + next)).toEqual(replay(prefix + next));
+  });
+
   it('omits all feed commands when every motion already uses the active speed, preserving repeated relative actions', () => {
     const source = fixtureSource(), job = parseGcode(source);
     Object.assign(job.settings, { printSpeed: 20, travelSpeed: 20, zSpeed: 20, retractSpeed: 20, unretractSpeed: 20 });

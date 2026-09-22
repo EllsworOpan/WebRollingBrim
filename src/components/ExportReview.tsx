@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArrowDownToLine, Check, ChevronLeft, ChevronRight, FileDiff, LoaderCircle, X } from 'lucide-react';
 import { indexLines, readDiffRows, type DiffRow, type PreparedExport } from '../core/export-review';
+import SafetyNotice from './SafetyNotice';
 
 const PAGE_SIZE = 250;
 
@@ -8,7 +9,7 @@ export default function ExportReview({ review, onClose, onDownload }: {
   review: PreparedExport; onClose: () => void; onDownload: (review: PreparedExport) => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null), scroller = useRef<HTMLDivElement>(null);
-  const targetLine = useRef<number | null>(null);
+  const targetLine = useRef<number | null>(review.insertionLine);
   const [index, setIndex] = useState<Uint32Array | null>(null), [error, setError] = useState('');
   const [layout, setLayout] = useState<'unified' | 'split'>('unified'), [full, setFull] = useState(false);
   const [page, setPage] = useState(0), [jump, setJump] = useState('');
@@ -68,6 +69,7 @@ export default function ExportReview({ review, onClose, onDownload }: {
       </header>
       <div className="review-summary"><span className="diff-added-count">+{added.toLocaleString()} added</span><span className="diff-removed-count">−0 removed</span><span>0 changed</span><span className="review-preserved" role="status"><Check size={14} />{downloaded ? 'Download started · original bytes preserved' : 'Original bytes preserved'}</span></div>
       <p className="review-location">One block, immediately before the first model extrusion at original line <strong>{review.insertionLine.toLocaleString()}</strong>. Green <b>+</b> lines are added; unchanged lines provide context.</p>
+      <SafetyNotice compact />
       <div className="review-controls">
         <div className="view-tabs" role="group" aria-label="Diff layout"><button className={layout === 'unified' ? 'active' : ''} aria-pressed={layout === 'unified'} onClick={() => setLayout('unified')}>Unified</button><button className={layout === 'split' ? 'active' : ''} aria-pressed={layout === 'split'} onClick={() => setLayout('split')}>Side by side</button></div>
         <label><input type="checkbox" checked={full} onChange={event => { setFull(event.target.checked); setPage(event.target.checked ? Math.floor(insertion / PAGE_SIZE) : 0); }} />Full file</label>

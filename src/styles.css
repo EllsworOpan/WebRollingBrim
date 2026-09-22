@@ -23,6 +23,14 @@
 .demo-guide a { color: #ffb454; }
 .sidebar-sample { margin: 10px 0 0; font-size: 11px; }
 
+.safety-notice { display: flex; align-items: flex-start; gap: 10px; padding: 17px 29px; border-top: 1px solid #534732; background: #211e18; color: #bfb7a7; font-size: 12px; line-height: 1.65; }
+.safety-notice > svg { flex: 0 0 auto; margin-top: 2px; color: #d4ac6e; }
+.safety-notice strong { color: #e5c899; font-weight: 550; }
+.safety-notice p { margin-top: 4px; }
+.safety-notice summary { width: fit-content; margin-top: 5px; text-decoration: underline; text-underline-offset: 3px; color: #d3bea0; }
+.safety-notice details > p { max-width: 1000px; }
+.safety-notice.compact { margin: 0 24px 14px; padding: 9px 12px; border: 1px solid #534732; border-radius: 5px; font-size: 11px; max-height: 180px; overflow: auto; flex: 0 0 auto; }
+
 .export-review { width: min(1400px, 96vw); height: min(940px, 94dvh); max-width: none; max-height: none; padding: 0; color: var(--text); background: #111b21; border: 1px solid #3a4b55; border-radius: 12px; box-shadow: 0 30px 100px #0009; }
 .export-review::backdrop { background: #030b10cf; backdrop-filter: blur(4px); }
 .review-shell { display: flex; flex-direction: column; height: 100%; min-height: 0; }
@@ -71,6 +79,8 @@
 .review-footer form button { background: #2b3a43; border-radius: 4px; padding: 6px 10px; font-size: 11px; }
 .diff-pagination { display: flex; align-items: center; gap: 8px; }
 @media(max-width:760px) {
+  .safety-notice { padding: 14px 20px; font-size: 11px; }
+  .safety-notice.compact { margin: 0 14px 12px; max-height: 150px; }
   .export-review { width: 100vw; height: 100dvh; border-radius: 0; border: 0; }
   .review-header { padding: 15px 14px 12px; gap: 8px; }
   .review-header h2 { font-size: 18px; }

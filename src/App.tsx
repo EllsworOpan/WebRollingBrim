@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowUpRight, Box, Check, ChevronDown, Circle, CircleHelp, FileCode2, FileDiff, Focus, Layers3, LoaderCircle, LockKeyhole, RotateCcw, ScanLine, Settings2, ShieldCheck, SlidersHorizontal, TriangleAlert, Upload, X } from 'lucide-react';
 import FirstLayerView from './components/FirstLayerView';
 import ExportReview from './components/ExportReview';
+import SafetyNotice from './components/SafetyNotice';
 import { exportBlockers } from './core/export';
 import { prepareExport, type PreparedExport } from './core/export-review';
 import { DEFAULT_BRIM, type BrimResult, type BrimSettings, type ExportMode, type LoadedJob, type WorkerRequest, type WorkerResponse } from './core/types';
@@ -131,6 +132,7 @@ export default function App() {
   };
   const blockers = loaded ? exportBlockers(loaded.job, exportMode) : [];
   const canExport = !!loaded && !blockers.length && !!brim?.paths.length && sameSettings(settings, brim.settings) && !status && !error;
+  const modelMoveFeed = loaded?.job.insertion?.nextMoveFeed ?? loaded?.job.insertion?.state.f ?? NaN;
   const notices = [...(loaded?.job.warnings || []), ...(brim?.warnings || [])];
   const stale = !!brim && !sameSettings(settings, brim.settings);
 
@@ -175,7 +177,7 @@ export default function App() {
           {loaded && <p className="file-setting-reference">From file: {loaded.job.settings.zHop} mm{!('retract_lift' in loaded.job.config) && !('filament_retract_lift' in loaded.job.config) ? ' (not specified; starts at zero)' : ''}</p>}
           {loaded && <><dl className="metadata-list"><div><dt>Firmware from file</dt><dd>{loaded.job.flavor}</dd></div><div><dt>Printer model</dt><dd>{loaded.job.config.printer_model || 'Not specified'}</dd></div><div><dt>Layer height</dt><dd>{loaded.job.settings.layerHeight} mm</dd></div><div><dt>Filament</dt><dd>{loaded.job.settings.filamentDiameter} mm</dd></div><div><dt>Flow multiplier</dt><dd>{loaded.job.settings.flow}</dd></div><div><dt>Retraction</dt><dd>{loaded.job.settings.retractLength} mm</dd></div></dl>
             <div className="export-settings"><label htmlFor="export-mode">Export method</label><select id="export-mode" value={exportMode} onChange={event => setExportMode(event.target.value as ExportMode)}><option value="standard">Standard G-code</option><option value="klipper" disabled={loaded.job.flavor !== 'klipper'}>Klipper state restore</option></select><p>{exportMode === 'standard' ? 'Ordinary commands, checked against the remaining original program.' : 'Uses Klipper’s runtime snapshot. Position and model checks still apply.'}</p></div>
-            <div className={`compatibility-summary ${blockers.length ? 'needs-attention' : ''}`}><strong>{blockers.length ? <TriangleAlert size={14} /> : <ShieldCheck size={14} />}{blockers.length ? 'Export checks need attention' : 'Export checks passed'}</strong><p>State is read immediately before the first model extrusion, including commands after the skirt.</p>{loaded.job.insertion && <dl className="metadata-list"><div><dt>Insertion line</dt><dd>{loaded.job.insertion.line.toLocaleString()}</dd></div><div><dt>XYZ positioning</dt><dd>{loaded.job.insertion.state.absoluteXYZ ? 'Absolute' : 'Relative'}</dd></div><div><dt>Extrusion</dt><dd>{loaded.job.insertion.state.absoluteE ? 'Absolute' : 'Relative'}</dd></div><div><dt>Resume feed</dt><dd>{Number.isFinite(loaded.job.insertion.state.f) ? `${(loaded.job.insertion.state.f / 60).toFixed(1)} mm/s` : 'Unknown'}</dd></div></dl>}{exportMode === 'standard' && !loaded.job.standardBlockers.length && loaded.job.insertion && <p>{loaded.job.extrusionResetLine ? `E use checked through the original reset at line ${loaded.job.extrusionResetLine.toLocaleString()}.` : 'E use checked through the rest of the file.'}</p>}</div></>}
+            <div className={`compatibility-summary ${blockers.length ? 'needs-attention' : ''}`}><strong>{blockers.length ? <TriangleAlert size={14} /> : <ShieldCheck size={14} />}{blockers.length ? 'Export checks need attention' : 'Export checks passed'}</strong><p>State is read immediately before the first model extrusion, including commands after the skirt.</p>{loaded.job.insertion && <dl className="metadata-list"><div><dt>Insertion line</dt><dd>{loaded.job.insertion.line.toLocaleString()}</dd></div><div><dt>XYZ positioning</dt><dd>{loaded.job.insertion.state.absoluteXYZ ? 'Absolute' : 'Relative'}</dd></div><div><dt>Extrusion</dt><dd>{loaded.job.insertion.state.absoluteE ? 'Absolute' : 'Relative'}</dd></div><div><dt>Model move feed</dt><dd>{Number.isFinite(modelMoveFeed) ? `${(modelMoveFeed / 60).toFixed(1)} mm/s` : 'Unknown'}</dd></div></dl>}{exportMode === 'standard' && !loaded.job.standardBlockers.length && loaded.job.insertion && <p>{loaded.job.extrusionResetLine ? `E use checked through the original reset at line ${loaded.job.extrusionResetLine.toLocaleString()}.` : 'E use checked through the rest of the file.'}</p>}</div></>}
         </div></details>
         <button className="reset-settings" onClick={() => { setSettings({ ...DEFAULT_BRIM, lineWidth: loaded?.job.settings.lineWidth ?? DEFAULT_BRIM.lineWidth, speed: loaded?.job.settings.printSpeed ?? DEFAULT_BRIM.speed, travelLift: loaded?.job.settings.zHop ?? DEFAULT_BRIM.travelLift }); setExportMode('standard'); }}><RotateCcw size={13} /> Reset settings</button>
         <div className="sidebar-footer"><ShieldCheck size={18} /><div><strong>Your original stays intact.</strong><p>One added brim block. No rewritten lines.</p></div></div>
@@ -219,6 +221,7 @@ export default function App() {
         </div>
       </main>
     </div>
+    <SafetyNotice />
     <footer className="app-footer"><span>ROLLING BRIM <span className="footer-divider">/</span> G-CODE WORKSPACE</span><span>PrusaSlicer text G-code <span className="footer-divider">·</span> All dimensions in mm</span></footer>
 
     {review && <ExportReview review={review} onClose={() => setReview(null)} onDownload={downloadGcode} />}

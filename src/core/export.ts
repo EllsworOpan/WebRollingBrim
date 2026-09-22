@@ -100,7 +100,13 @@ export function createInsertion(job: ParsedJob, brim: BrimResult, mode: ExportMo
   // Do not invent/reset E in standard mode. Original relative moves are unaffected;
   // the source's next G92 E (if any) removes the counter difference.
   if (mode === 'klipper') lines.push('RESTORE_GCODE_STATE NAME=ROLLING_BRIM_APP MOVE=0');
-  else if (feed !== s.f) lines.push(`G1 F${decimal(s.f)}`);
+  // The next original move can establish its own speed. Do not restore a feed
+  // that it immediately replaces; otherwise preserve the feed it inherits.
+  else {
+    const nextFeed = job.insertion.nextMoveFeed;
+    const setsOwnFeed = typeof nextFeed === 'number' && Number.isFinite(nextFeed) && nextFeed > 0;
+    if (feed !== s.f && !setsOwnFeed) lines.push(`G1 F${decimal(s.f)}`);
+  }
   lines.push(`;TYPE:${s.type}`, `;WIDTH:${n(s.width, 6)}`, `;HEIGHT:${n(s.height, 6)}`, '; ROLLING_BRIM_END');
   return lines.join(job.newline) + job.newline;
 }

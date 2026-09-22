@@ -211,7 +211,11 @@ export function parseGcode(source: string, name = 'print.gcode', byteLength?: nu
       if (!Number.isFinite(firstLayerZ)) firstLayerZ = nz;
       // Snapshot BEFORE this exact command, including settings after the skirt.
       // Never skip an incompatible first model move and insert farther into it.
-      insertion = { byteOffset: new TextEncoder().encode(source.slice(0, match.index)).byteLength, line: lineNo, state: before };
+      insertion = {
+        byteOffset: new TextEncoder().encode(source.slice(0, match.index)).byteLength,
+        line: lineNo, state: before,
+        nextMoveFeed: Number.isFinite(args.F) && args.F > 0 ? args.F : null,
+      };
       checkExtrusionCounter = true;
       if (!unitsKnown) blockers.add('An explicit G21 is required before model extrusion; millimetres cannot be assumed.');
       if (!xyzModeKnown || !before.absoluteXYZ) blockers.add('Absolute XYZ positioning (G90) must be established before the first model extrusion.');

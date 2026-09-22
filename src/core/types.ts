@@ -26,7 +26,11 @@ export interface ParsedJob {
   slicer: string; flavor: string; config: Record<string, string>;
   settings: PrintSettings; firstLayerZ: number; paths: PrintPath[];
   bed: Ring; bounds: Bounds;
-  insertion: { byteOffset: number; line: number; state: PrinterState } | null;
+  insertion: {
+    byteOffset: number; line: number; state: PrinterState;
+    // Explicit feed on the exact original move that follows our insertion.
+    nextMoveFeed: number | null;
+  } | null;
   warnings: string[]; blockers: string[];
   standardBlockers: string[];
   klipperBlockers: string[];
