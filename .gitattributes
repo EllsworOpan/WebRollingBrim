@@ -1,0 +1,7 @@
+* text=auto eol=lf
+
+# Preserve original G-code fixture bytes across Windows and Linux checkouts.
+*.gcode -text
+*.gco -text
+*.gc -text
+*.bgcode -text
