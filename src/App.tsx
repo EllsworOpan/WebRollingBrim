@@ -3,8 +3,9 @@ import { ArrowUpRight, Box, Check, ChevronDown, Circle, CircleHelp, FileCode2, F
 import FirstLayerView from './components/FirstLayerView';
 import ExportReview from './components/ExportReview';
 import SafetyNotice from './components/SafetyNotice';
-import { exportBlockers } from './core/export';
-import { prepareBgcodeExport, prepareExport, type PreparedExport } from './core/export-review';
+import ExportConcerns from './components/ExportConcerns';
+import { hardExportBlockers } from './core/export';
+import { assertReviewAccepted, prepareBgcodeExport, prepareExport, type PreparedExport } from './core/export-review';
 import { DEFAULT_BRIM, type BrimResult, type BrimSettings, type ExportMode, type LoadedJob, type WorkerRequest, type WorkerResponse } from './core/types';
 import sampleUrl from '../examples/gcodes/clearance-test-plate.gcode?url';
 import sampleModelUrl from '../examples/models/clearance-test-plate.stl?url';
@@ -62,10 +63,12 @@ export default function App() {
   const input = useRef<HTMLInputElement>(null), worker = useRef<Worker | null>(null), requestId = useRef(0);
   const dragDepth = useRef(0), generationTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const downloadUrls = useRef<string[]>([]);
+  const reviewRevision = useRef(0);
   const update = <K extends keyof BrimSettings>(key: K, value: BrimSettings[K]) => setSettings(previous => ({ ...previous, [key]: value }));
 
   useEffect(() => () => { worker.current?.terminate(); downloadUrls.current.forEach(url => URL.revokeObjectURL(url)); }, []);
   useEffect(() => { if (toast) { const timeout = setTimeout(() => setToast(''), 5000); return () => clearTimeout(timeout); } }, [toast]);
+  useEffect(() => { reviewRevision.current++; setReview(null); }, [loaded, settings, exportMode]);
   useEffect(() => { if (help) { const close = (event: KeyboardEvent) => { if (event.key === 'Escape') setHelp(false); }; window.addEventListener('keydown', close); return () => window.removeEventListener('keydown', close); } }, [help]);
 
   const loadFile = useCallback(async (incoming: File, isDemo = false) => {
@@ -122,27 +125,35 @@ export default function App() {
   const reviewGcode = async () => {
     if (!loaded || !file || !brim || !sameSettings(settings, brim.settings)) return;
     const id = requestId.current;
+    const revision = reviewRevision.current;
     setStatus('Preparing export…');
     try {
+      // Build a reviewable candidate under these assumptions. Download requires
+      // individual acceptance and a second confirmation for this exact output.
+      const assumptions = loaded.job.concerns.map(issue => issue.id);
       const prepared = binaryFile && loaded.bgcode
-        ? await prepareBgcodeExport(binaryFile, file, loaded.bgcode, loaded.job, brim, exportMode)
-        : prepareExport(file, loaded.job, brim, exportMode);
-      if (id === requestId.current) setReview(prepared);
+        ? await prepareBgcodeExport(binaryFile, file, loaded.bgcode, loaded.job, brim, exportMode, assumptions)
+        : prepareExport(file, loaded.job, brim, exportMode, assumptions);
+      if (id === requestId.current && revision === reviewRevision.current) setReview(prepared);
     } catch (reason) { if (id === requestId.current) setError((reason as Error).message); }
     finally { if (id === requestId.current) setStatus(''); }
   };
-  const downloadGcode = (prepared: PreparedExport) => {
+  const downloadGcode = (prepared: PreparedExport, acceptedConcerns: string[]) => {
     try {
+      if (prepared !== review) throw new Error('Open a fresh export review before downloading.');
+      assertReviewAccepted(prepared, acceptedConcerns);
       const url = URL.createObjectURL(prepared.output); downloadUrls.current.push(url);
       const link = document.createElement('a'); link.href = url; link.download = prepared.name;
       document.body.append(link); link.click(); link.remove();
       setToast(prepared.format === 'bgcode' ? 'Binary download started. Original commands and metadata are preserved.' : 'Download started from the reviewed output. All original lines are preserved.');
     } catch (reason) { setError((reason as Error).message); }
   };
-  const blockers = loaded ? exportBlockers(loaded.job, exportMode) : [];
+  const blockers = loaded ? hardExportBlockers(loaded.job, exportMode) : [];
+  const concerns = loaded?.job.concerns || [];
   const canExport = !!loaded && !blockers.length && !!brim?.paths.length && sameSettings(settings, brim.settings) && !status && !error;
   const modelMoveFeed = loaded?.job.insertion?.modelFeed ?? NaN;
   const notices = [...(loaded?.job.warnings || []), ...(brim?.warnings || [])];
+  const issueLabel = blockers.length ? 'Export blocked' : concerns.length ? 'Export requires confirmation' : notices.length ? 'Minor concerns — export allowed' : 'No issues';
   const stale = !!brim && !sameSettings(settings, brim.settings);
 
   return <div className="app-shell"
@@ -186,7 +197,7 @@ export default function App() {
           {loaded && <p className="file-setting-reference">From file: {loaded.job.settings.zHop} mm{!('retract_lift' in loaded.job.config) && !('filament_retract_lift' in loaded.job.config) ? ' (not specified; starts at zero)' : ''}</p>}
           {loaded && <><dl className="metadata-list"><div><dt>Firmware from file</dt><dd>{loaded.job.flavor}</dd></div><div><dt>Printer model</dt><dd>{loaded.job.config.printer_model || 'Not specified'}</dd></div><div><dt>Layer height</dt><dd>{loaded.job.settings.layerHeight} mm</dd></div><div><dt>Filament</dt><dd>{loaded.job.settings.filamentDiameter} mm</dd></div><div><dt>Flow multiplier</dt><dd>{loaded.job.settings.flow}</dd></div><div><dt>Retraction</dt><dd>{loaded.job.settings.retractLength} mm</dd></div></dl>
             <div className="export-settings"><label htmlFor="export-mode">Export method</label><select id="export-mode" value={exportMode} onChange={event => setExportMode(event.target.value as ExportMode)}><option value="standard">Standard G-code</option><option value="klipper" disabled={loaded.job.flavor !== 'klipper'}>Klipper state restore</option></select><p>{exportMode === 'standard' ? 'Ordinary commands, checked against the remaining original program.' : 'Uses Klipper’s runtime snapshot. Position and model checks still apply.'}</p></div>
-            <div className={`compatibility-summary ${blockers.length ? 'needs-attention' : ''}`}><strong>{blockers.length ? <TriangleAlert size={14} /> : <ShieldCheck size={14} />}{blockers.length ? 'Export checks need attention' : 'Export checks passed'}</strong><p>{loaded.job.insertion?.reason ?? 'No insertion point found.'}</p>{loaded.job.insertion && <dl className="metadata-list"><div><dt>Insertion line</dt><dd>{loaded.job.insertion.line.toLocaleString()}</dd></div><div><dt>XYZ positioning</dt><dd>{loaded.job.insertion.state.absoluteXYZ ? 'Absolute' : 'Relative'}</dd></div><div><dt>Extrusion</dt><dd>{loaded.job.insertion.state.absoluteE ? 'Absolute' : 'Relative'}</dd></div><div><dt>Model move feed</dt><dd>{Number.isFinite(modelMoveFeed) ? `${(modelMoveFeed / 60).toFixed(1)} mm/s` : 'Unknown'}</dd></div><div><dt>Brim acceleration</dt><dd>{loaded.job.insertion.acceleration.print === null ? 'Inherited' : `${loaded.job.insertion.acceleration.print} mm/s²`}</dd></div><div><dt>Travel acceleration</dt><dd>{loaded.job.insertion.acceleration.travel === null ? 'Inherited' : `${loaded.job.insertion.acceleration.travel} mm/s²`}</dd></div></dl>}{exportMode === 'standard' && !loaded.job.standardBlockers.length && loaded.job.insertion && <p>{loaded.job.extrusionResetLine ? `E use checked through the original reset at line ${loaded.job.extrusionResetLine.toLocaleString()}.` : 'E use checked through the rest of the file.'}</p>}</div></>}
+            <div className={`compatibility-summary ${blockers.length || concerns.length || notices.length ? 'needs-attention' : ''}`}><strong>{blockers.length || concerns.length || notices.length ? <TriangleAlert size={14} /> : <ShieldCheck size={14} />}{issueLabel}</strong><p>{loaded.job.insertion?.reason ?? 'No insertion point found.'}</p>{loaded.job.insertion && <dl className="metadata-list"><div><dt>Insertion line</dt><dd>{loaded.job.insertion.line.toLocaleString()}</dd></div><div><dt>XYZ positioning</dt><dd>{loaded.job.insertion.state.absoluteXYZ ? 'Absolute' : 'Relative'}</dd></div><div><dt>Extrusion</dt><dd>{loaded.job.insertion.state.absoluteE ? 'Absolute' : 'Relative'}</dd></div><div><dt>Model move feed</dt><dd>{Number.isFinite(modelMoveFeed) ? `${(modelMoveFeed / 60).toFixed(1)} mm/s` : 'Unknown'}</dd></div><div><dt>Brim acceleration</dt><dd>{loaded.job.insertion.acceleration.print === null ? 'Inherited' : `${loaded.job.insertion.acceleration.print} mm/s²`}</dd></div><div><dt>Travel acceleration</dt><dd>{loaded.job.insertion.acceleration.travel === null ? 'Inherited' : `${loaded.job.insertion.acceleration.travel} mm/s²`}</dd></div></dl>}{exportMode === 'standard' && !loaded.job.standardBlockers.length && loaded.job.insertion && <p>{loaded.job.extrusionResetLine ? `E use checked through the original reset at line ${loaded.job.extrusionResetLine.toLocaleString()}.` : 'E use checked through the rest of the file.'}</p>}</div></>}
         </div></details>
         <button className="reset-settings" onClick={() => { setSettings({ ...DEFAULT_BRIM, lineWidth: loaded?.job.settings.lineWidth ?? DEFAULT_BRIM.lineWidth, speed: loaded?.job.settings.printSpeed ?? DEFAULT_BRIM.speed, travelLift: loaded?.job.settings.zHop ?? DEFAULT_BRIM.travelLift }); setExportMode('standard'); }}><RotateCcw size={13} /> Reset settings</button>
         <div className="sidebar-footer"><ShieldCheck size={18} /><div><strong>Your original stays intact.</strong><p>One added brim block. No rewritten lines.</p></div></div>
@@ -225,8 +236,9 @@ export default function App() {
           <div className="result-heading"><div><span className="eyebrow">ADDED BRIM</span><h2>{loaded ? 'Ready for a closer look.' : 'Your brim, at a glance.'}</h2></div><span className={`result-status ${brim && !status ? 'ready' : ''}`}>{status ? <LoaderCircle size={13} className="spin" /> : brim ? <Check size={13} /> : <Circle size={12} />}{status ? 'Calculating' : brim ? 'Preview generated' : 'Waiting for a file'}</span></div>
           <div className="metrics"><div><span>Toolpath length</span><strong>{brim ? (brim.length / 1000).toFixed(2) : '—'}<small>m</small></strong></div><div><span>Extra filament</span><strong>{brim ? (brim.filament / 1000).toFixed(2) : '—'}<small>m</small></strong></div><div><span>Estimated time</span><strong>{brim ? brim.minutes < 1 ? '< 1' : Math.round(brim.minutes) : '—'}<small>min</small></strong></div><div><span>Island coverage</span><strong>{brim && loaded ? `${loaded.geometry.islands.length - brim.unserved.length}` : '—'}<small>{loaded ? `/ ${loaded.geometry.islands.length}` : 'islands'}</small></strong></div></div>
           {loaded && <div className="result-footnote">Estimates cover the added brim. Original file estimates and thumbnails are preserved.</div>}
-          {!!blockers.length && <div className="export-blockers" role="alert"><strong><TriangleAlert size={16} />Preview only — export needs attention</strong><ul>{blockers.map(item => <li key={item}>{item}</li>)}</ul></div>}
-          {!!notices.length && <details className="review-notes"><summary><span><CircleHelp size={14} />File & brim notes <span className="count-badge">{notices.length}</span></span><ChevronDown size={14} /></summary><ul>{notices.map(note => <li key={note}>{note}</li>)}</ul></details>}
+          {!!blockers.length && <div className="export-blockers" role="alert"><strong><TriangleAlert size={16} />Export blocked — these issues cannot be overridden</strong><ul>{blockers.map(item => <li key={item}>{item}</li>)}</ul></div>}
+          {!!concerns.length && <div className="export-concerns"><strong><TriangleAlert size={16} />Export requires confirmation</strong><p>Review these assumptions with the generated G-code. Each needs acceptance and a separate download confirmation.</p><ExportConcerns concerns={concerns} /></div>}
+          {!!notices.length && <details className="review-notes"><summary><span><CircleHelp size={14} />Minor concerns — export allowed <span className="count-badge">{notices.length}</span></span><ChevronDown size={14} /></summary><ul>{notices.map(note => <li key={note}>{note}</li>)}</ul></details>}
         </div>
       </main>
     </div>

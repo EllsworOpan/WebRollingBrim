@@ -43,6 +43,15 @@ export interface PrintSettings {
   flow: number; printSpeed: number; travelSpeed: number; zSpeed: number;
   retractLength: number; retractSpeed: number; unretractSpeed: number; zHop: number;
 }
+/** A specific, reviewable assumption; never a bypass for hard blockers. */
+export interface ExportConcern {
+  id: string;
+  line: number;
+  command: string;
+  message: string;
+  assumption: string;
+  consequence: string;
+}
 export interface ParsedJob {
   name: string; bytes: number; lineCount: number; layerCount: number;
   slicer: string; flavor: string; config: Record<string, string>;
@@ -50,6 +59,7 @@ export interface ParsedJob {
   bed: Ring; bounds: Bounds;
   insertion: InsertionPlan | null;
   warnings: string[]; blockers: string[];
+  concerns: ExportConcern[];
   standardBlockers: string[];
   klipperBlockers: string[];
   extrusionResetLine: number | null;

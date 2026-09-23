@@ -53,6 +53,14 @@ npm run check
 Remove-Item Env:ROLLING_BRIM_TEST_GCODE
 ```
 
+Binary samples with reviewable startup concerns can be checked with `ROLLING_BRIM_TEST_BGCODE`. This test explicitly accepts only the parsed concerns to exercise round-trip preservation; it still rejects hard blockers. It does not approve the file for printing:
+
+```powershell
+$env:ROLLING_BRIM_TEST_BGCODE = (Resolve-Path '.local/gcodes/your-print.bgcode').Path
+npm run check
+Remove-Item Env:ROLLING_BRIM_TEST_BGCODE
+```
+
 ## Previous lizard sample
 
 The previously supplied lizard is not bundled with the site. Its user-provided source is [Articulated Lizard by McGybeer](https://www.thingiverse.com/thing:3501143). On 2026-09-22, the original page linked to [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/).

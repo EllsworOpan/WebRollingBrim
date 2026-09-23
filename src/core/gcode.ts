@@ -1,5 +1,6 @@
-import type { Bounds, ParsedJob, Point, PrinterState, PrintPath, PrintSettings, Ring } from './types';
+import type { Bounds, ExportConcern, ParsedJob, Point, PrinterState, PrintPath, PrintSettings, Ring } from './types';
 import { accelerationWrites, planInsertion, unknownAcceleration, type ApproachCommand } from './insertion';
+import { inheritedSetting, startupRoutine, unsupportedTransform } from './input-commands';
 
 const NUMBER = '[-+]?(?:\\d+\\.?\\d*|\\.\\d+)';
 const modelTypes = /^(External perimeter|Perimeter|Solid infill|Internal infill|Top solid infill|Gap fill|Overhang perimeter|Bridge infill|Internal bridge infill|Thin wall)$/i;
@@ -112,6 +113,7 @@ export function arcPoints(start: Point, end: Point, args: Record<string, number>
 export function parseGcode(source: string, name = 'print.gcode', byteLength?: number): ParsedJob {
   const config = parseConfig(source), settings = readSettings(config);
   const warnings = new Set<string>(), blockers = new Set<string>();
+  const concerns: ExportConcern[] = [];
   const standardBlockers = new Set<string>();
   // Report the first few actionable failures, not thousands of repeated moves.
   const standardProblem = (message: string) => { if (standardBlockers.size < 5) standardBlockers.add(message); };
@@ -151,6 +153,8 @@ export function parseGcode(source: string, name = 'print.gcode', byteLength?: nu
   let x = NaN, y = NaN, z = NaN, e = 0, f = NaN, retracted = 0, eKnown = false;
   let xyzModeKnown = false, eModeKnown = false, unitsKnown = false;
   let firstModelSeen = false, checkExtrusionCounter = false;
+  let preModelRetract = false, restart: { line: number; command: string } | null = null;
+  let annotatedRestart = false;
   let extrusionResetLine: number | null = null;
   let absoluteXYZ = true, absoluteE = true, layer = 0, lineNo = 0, type = 'Custom';
   let width = settings.lineWidth, height = settings.layerHeight, firstLayerZ = NaN;
@@ -204,6 +208,8 @@ export function parseGcode(source: string, name = 'print.gcode', byteLength?: nu
     const args: Record<string, number> = {};
     for (const param of code.slice(command.length).matchAll(parameterPattern)) args[param[1].toUpperCase()] = Number(param[2]);
     const motionCommand = ['G0', 'G1', 'G2', 'G3'].includes(command);
+    const neutral = neutralCommand.test(command) || inheritedSetting(command, flavor);
+    const routine = layer === 0 && startupRoutine.test(command);
     if (!['G0', 'G1', 'M204'].includes(command)) approach = [];
     // Consume the entire motion tail. Regex searches alone can interpret text in
     // comments, duplicate axes, or a second command as if it were valid motion.
@@ -227,12 +233,30 @@ export function parseGcode(source: string, name = 'print.gcode', byteLength?: nu
       if (!firstModelSeen && layer === 1) approach.push({ command, args, index: match.index, line: lineNo, before: snapshot(), modesKnown: xyzModeKnown && eModeKnown && unitsKnown });
       acceleration = { ...acceleration, ...accelerationWrites(args, flavor) };
     }
-    if (checkExtrusionCounter && !motionCommand && !neutralCommand.test(command) && !['G90', 'G91', 'G92'].includes(command)) {
+    if (checkExtrusionCounter && !motionCommand && !neutral && !['G90', 'G91', 'G92'].includes(command)) {
       // Shutdown commands do not depend on the logical E counter.
       if (!['G28', 'M18', 'M84', 'M2'].includes(command)) standardProblem(`Line ${lineNo}: cannot establish that ${command} is independent of the E counter before its next reset.`);
     }
-    if (!firstModelSeen && !motionCommand && !neutralCommand.test(command) && !['G90', 'G91', 'G92', 'G28', 'G29', 'G80', 'M18', 'M84'].includes(command)) blockers.add(`Command ${command} before model extrusion is not supported for state recovery.`);
-    if (layer === 1 && !motionCommand && !neutralCommand.test(command) && !['G90', 'G91', 'G92'].includes(command) && !(type === 'Custom' && ['G28', 'M18', 'M84', 'M2'].includes(command))) blockers.add(`Command ${command} within first-layer features is not supported for geometry recovery.`);
+    const unknownStartup = !firstModelSeen && !motionCommand && !neutral && !['G90', 'G91', 'G92', 'G28', 'G29', 'G80', 'M18', 'M84'].includes(command);
+    const assumableStartup = unknownStartup && (command.startsWith('M') || routine) && !unsupportedTransform.test(command);
+    if (assumableStartup) {
+      concerns.push({ id: `startup:${lineNo}:${code}`, line: lineNo, command: code,
+        message: `${command} has unverified startup effects.`,
+        assumption: routine
+          ? 'Startup completes with the selected tool ready to print. Its settings stay inherited, the retraction balance from explicit E moves remains usable, and no untracked deposition obstructs the brim. Position, feed and modes must be established again afterward.'
+          : 'This command preserves the established units, positioning/extrusion modes, coordinate system, active tool and tracked retraction balance. It does not add untracked deposition in the print area.',
+        consequence: 'If that assumption is wrong, the brim position, extrusion or clearance can be wrong. Acceleration is treated as unknown until explicitly set again; unknown acceleration is inherited, never guessed or restored.' });
+      acceleration = unknownAcceleration();
+    } else if (unknownStartup) blockers.add(`Command ${command} before model extrusion is not supported for state recovery.`);
+    if (unsupportedTransform.test(command)) blockers.add(`Printer transform ${command} is not supported for export.`);
+    if (layer === 1 && !motionCommand && !neutral && !assumableStartup && !['G90', 'G91', 'G92'].includes(command) && !(type === 'Custom' && ['G28', 'M18', 'M84', 'M2'].includes(command))) blockers.add(`Command ${command} within first-layer features is not supported for geometry recovery.`);
+    if (routine) {
+      // Keep the selected tool's configuration active, without simulating or
+      // replaying the routine. Explicit commands must recover required state.
+      x = NaN; y = NaN; z = NaN; f = NaN;
+      e = 0; eKnown = false; xyzModeKnown = false; eModeKnown = false; unitsKnown = false;
+      continue;
+    }
     if (command.startsWith('T')) tools.add(Number(command.slice(1)));
     if (command === 'G20') blockers.add('Inch-based G-code is not supported.');
     if (command === 'G21') unitsKnown = true;
@@ -277,6 +301,8 @@ export function parseGcode(source: string, name = 'print.gcode', byteLength?: nu
     if ('E' in args && !eModeKnown && layer === 1) blockers.add('Extrusion mode is ambiguous after G90/G91. The file needs an explicit M82/M83 before first-layer extrusion.');
     if ('E' in args && absoluteE && !eKnown && layer === 1) blockers.add('Absolute extrusion needs an explicit G92 E reference before the first layer.');
     retracted = Math.max(0, retracted - de);
+    if (de < 0) { preModelRetract = !firstModelSeen; restart = null; }
+    else if (de > 0 && before.retracted > 0 && !['X', 'Y', 'Z'].some(axis => axis in args)) restart = { line: lineNo, command: code };
     const motion = Math.hypot(nx - x, ny - y) > 0.00001 || command === 'G2' || command === 'G3';
     if (!firstModelSeen && layer === 1 && modelTypes.test(type) && de > 1e-7 && ('X' in args || 'Y' in args || command === 'G2' || command === 'G3') && (motion || ![x, y].every(Number.isFinite))) {
       firstModelSeen = true;
@@ -290,7 +316,16 @@ export function parseGcode(source: string, name = 'print.gcode', byteLength?: nu
       if (!xyzModeKnown || !before.absoluteXYZ) blockers.add('Absolute XYZ positioning (G90) must be established before the first model extrusion.');
       if (!eModeKnown || before.absoluteE) blockers.add('Relative extrusion (M83) must be established before the first model extrusion.');
       if (![before.x, before.y, before.z, before.f].every(Number.isFinite) || before.f <= 0) blockers.add('XYZ position and feed rate must be known before the first model extrusion.');
-      if (before.retracted > 0.00001) blockers.add('The first model extrusion starts with outstanding retraction. A separate unretract move is required before it.');
+      if (before.retracted > 0.00001) {
+        if (preModelRetract && restart) {
+          annotatedRestart = true;
+          const remainder = Number(before.retracted.toFixed(7));
+          concerns.push({ id: `restart:${restart.line}:${remainder}`, line: restart.line, command: restart.command,
+            message: `The startup retract and explicit restart leave a ${remainder} mm difference.`,
+            assumption: 'The separate restart completes startup preparation and this remaining difference is intentional. Positive extrusion in annotated model features is treated as deposited material.',
+            consequence: 'The brim preserves the original retraction balance. If model moves are still only unretracting, the footprint may overestimate deposited material.' });
+        } else blockers.add('The first model extrusion starts with outstanding retraction. A separate unretract move is required before it.');
+      }
       if (Math.abs(before.z - firstLayerZ) > 0.002) blockers.add('The nozzle must already be at first-layer Z before model extrusion.');
     }
     if (!firstModelSeen && layer === 1) {
@@ -302,7 +337,7 @@ export function parseGcode(source: string, name = 'print.gcode', byteLength?: nu
         if (approach.length > 1000) approach = [];
       }
     }
-    if (deposited > 1e-7 && motion && [x, y, nx, ny, nz].every(Number.isFinite)) {
+    if ((deposited > 1e-7 || (annotatedRestart && modelTypes.test(type) && de > 1e-7)) && motion && [x, y, nx, ny, nz].every(Number.isFinite)) {
       addBounds({ x, y }); addBounds({ x: nx, y: ny });
       if (layer === 1) {
         if (!Number.isFinite(firstLayerZ)) firstLayerZ = nz;
@@ -322,14 +357,16 @@ export function parseGcode(source: string, name = 'print.gcode', byteLength?: nu
         else { active = { points, type, width, height, auxiliary }; paths.push(active); }
       }
     } else if (motion || de < 0) active = null;
+    if (retracted < 1e-7) annotatedRestart = false;
     x = nx; y = ny; z = nz; e = ne;
   }
   if (tools.size > 1 || [...tools].some(tool => tool !== 0)) blockers.add('Export currently supports a single T0 extruder.');
   if (!layer) blockers.add('No PrusaSlicer layer markers were found.');
   if (!paths.some(path => !path.auxiliary)) blockers.add('No model extrusion was found on the first layer.');
   if (!insertion) blockers.add('No first model extrusion was found for brim insertion.');
+  else if (insertion.kind === 'model') warnings.add(insertion.reason);
   if (Number.isFinite(firstLayerZ) && Math.abs(firstLayerZ - settings.layerHeight) > 0.015) blockers.add('The first-layer Z differs from its height. Z offsets and raised first layers are not supported yet.');
   if (paths.some(path => path.type === 'Skirt/Brim')) warnings.add('Existing skirt or brim paths are retained. New paths avoid their deposited material.');
   if (config.gcode_label_objects === 'disabled') warnings.add('Coverage is measured per connected first-layer island; object names are not present in this file.');
-  return { name, bytes: byteLength ?? new TextEncoder().encode(source).byteLength, lineCount: lineNo, layerCount: layer, slicer, flavor, config, settings, firstLayerZ, paths, bed, bounds, insertion, warnings: [...warnings], blockers: [...blockers], standardBlockers: [...standardBlockers], klipperBlockers, extrusionResetLine, newline };
+  return { name, bytes: byteLength ?? new TextEncoder().encode(source).byteLength, lineCount: lineNo, layerCount: layer, slicer, flavor, config, settings, firstLayerZ, paths, bed, bounds, insertion, warnings: [...warnings], blockers: [...blockers], concerns, standardBlockers: [...standardBlockers], klipperBlockers, extrusionResetLine, newline };
 }

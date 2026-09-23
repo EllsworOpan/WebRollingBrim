@@ -18,15 +18,20 @@ const decimal = (value: number): string => {
 };
 const n = (value: number, precision = 4) => decimal(Number(value.toFixed(precision)));
 
-export function exportBlockers(job: ParsedJob, mode: ExportMode = 'standard'): string[] {
+export function hardExportBlockers(job: ParsedJob, mode: ExportMode = 'standard'): string[] {
   if (mode === 'standard') return [...job.blockers, ...job.standardBlockers];
   if (mode === 'klipper') return [...job.blockers, ...job.klipperBlockers, ...(job.flavor === 'klipper' ? [] : ['Klipper state restore requires a file explicitly marked klipper.'])];
   return [...job.blockers, 'Unknown export mode.'];
 }
 
+export function exportBlockers(job: ParsedJob, mode: ExportMode = 'standard', acceptedConcerns: readonly string[] = []): string[] {
+  return [...hardExportBlockers(job, mode), ...job.concerns.filter(issue => !acceptedConcerns.includes(issue.id))
+    .map(issue => `Line ${issue.line}: ${issue.message} Explicit acceptance of this assumption is required.`)];
+}
+
 /** A single insertion. Standard mode relies on the checked relative-E continuation. */
-export function createInsertion(job: ParsedJob, brim: BrimResult, mode: ExportMode = 'standard'): string {
-  const blockers = exportBlockers(job, mode);
+export function createInsertion(job: ParsedJob, brim: BrimResult, mode: ExportMode = 'standard', acceptedConcerns: readonly string[] = []): string {
+  const blockers = exportBlockers(job, mode, acceptedConcerns);
   if (blockers.length) throw new Error(blockers.join(' '));
   if (!job.insertion || !brim.paths.length) throw new Error('Generate a printable brim before exporting.');
   if (brim.transitions.length !== brim.paths.length || brim.transitions[0] !== 'travel' || brim.transitions.some(kind => kind !== 'step' && kind !== 'travel')) throw new Error('The brim travel plan is incomplete. Regenerate the brim.');
@@ -95,7 +100,7 @@ export function createInsertion(job: ParsedJob, brim: BrimResult, mode: ExportMo
     if (delta !== 0) move({ E: delta }, delta < 0 ? p.retractSpeed : p.unretractSpeed, true);
     retracted = target;
   };
-  const travel = (x: number, y: number, exact = false) => {
+  const travel = (x: number, y: number, exact = false, restartRetraction = 0) => {
     const target = { X: exact ? x : Number(n(x)), Y: exact ? y : Number(n(y)) };
     if (position.X !== target.X || position.Y !== target.Y || position.Z !== plan.printZ) {
       // Reuse outstanding retraction and an existing lift. Never lower before XY.
@@ -104,7 +109,7 @@ export function createInsertion(job: ParsedJob, brim: BrimResult, mode: ExportMo
       move(target, p.travelSpeed, true);
       move({ Z: plan.printZ }, p.zSpeed, true);
     }
-    setRetraction(0);
+    setRetraction(restartRetraction);
   };
   for (const [index, path] of brim.paths.entries()) {
     if (brim.transitions[index] === 'step') {
@@ -125,7 +130,7 @@ export function createInsertion(job: ParsedJob, brim: BrimResult, mode: ExportMo
   }
   if (plan.kind === 'model') {
     lines.push('; BRIM_RETURN');
-    travel(s.x, s.y, true);
+    travel(s.x, s.y, true, plan.handoff.retracted);
   } else {
     lines.push('; BRIM_HANDOFF');
     setRetraction(Math.max(p.retractLength, plan.handoff.retracted));
@@ -161,9 +166,9 @@ export function createInsertion(job: ParsedJob, brim: BrimResult, mode: ExportMo
   return lines.join(job.newline) + job.newline;
 }
 
-export function exportBytes(original: Uint8Array, job: ParsedJob, brim: BrimResult, mode: ExportMode = 'standard'): Uint8Array {
+export function exportBytes(original: Uint8Array, job: ParsedJob, brim: BrimResult, mode: ExportMode = 'standard', acceptedConcerns: readonly string[] = []): Uint8Array {
   if (original.byteLength !== job.bytes) throw new Error('The source file does not match this preview.');
-  const block = createInsertion(job, brim, mode);
+  const block = createInsertion(job, brim, mode, acceptedConcerns);
   validateGeneratedGcode(block, mode);
   const added = new TextEncoder().encode(block);
   const offset = job.insertion!.byteOffset;

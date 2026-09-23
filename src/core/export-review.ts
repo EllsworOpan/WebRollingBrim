@@ -1,7 +1,7 @@
 import { createInsertion } from './export';
 import { validateGeneratedGcode } from './generated-gcode';
 import { encodeBgcodeBlocks, type BgcodeIndex } from './bgcode';
-import type { BrimResult, ExportMode, ParsedJob } from './types';
+import type { BrimResult, ExportConcern, ExportMode, ParsedJob } from './types';
 
 export interface PreparedExport {
   source: File;
@@ -12,12 +12,19 @@ export interface PreparedExport {
   insertionByteOffset: number;
   insertionDescription: string;
   format?: 'bgcode';
+  concerns?: ExportConcern[];
+  warnings?: string[];
+}
+
+/** Called again at download: preparing a candidate does not accept its risks. */
+export function assertReviewAccepted(review: PreparedExport, acceptedConcerns: readonly string[]): void {
+  if (review.concerns?.some(issue => !acceptedConcerns.includes(issue.id))) throw new Error('Accept each export assumption and confirm this download first.');
 }
 
 /** The diff uses decoded source lines; the immutable download remains binary. */
-export async function prepareBgcodeExport(original: File, source: File, binary: BgcodeIndex, job: ParsedJob, brim: BrimResult, mode: ExportMode): Promise<PreparedExport> {
+export async function prepareBgcodeExport(original: File, source: File, binary: BgcodeIndex, job: ParsedJob, brim: BrimResult, mode: ExportMode, acceptedConcerns: readonly string[] = []): Promise<PreparedExport> {
   if (original.size !== binary.sourceBytes || source.size !== job.bytes) throw new Error('The source file does not match this preview.');
-  const added = createInsertion(job, brim, mode);
+  const added = createInsertion(job, brim, mode, acceptedConcerns);
   const { byteOffset, line } = job.insertion!;
   const block = binary.blocks.find(part => byteOffset >= part.textStart && byteOffset < part.textEnd);
   if (!block) throw new Error('The insertion point is outside the binary G-code blocks.');
@@ -28,7 +35,7 @@ export async function prepareBgcodeExport(original: File, source: File, binary: 
   validateGeneratedGcode(added, mode);
   const changed = new Uint8Array(await new Blob([before, added, after]).arrayBuffer());
   return {
-    source, format: 'bgcode',
+    source, format: 'bgcode', concerns: job.concerns.map(issue => ({ ...issue })), warnings: [...job.warnings, ...brim.warnings],
     output: new Blob([original.slice(0, block.start), ...encodeBgcodeBlocks(changed, binary.checksum), original.slice(block.end)], { type: 'application/octet-stream' }),
     name: original.name.replace(/\.(bgcode|gcode|gco|gc)$/i, '') + '_rolling_brim.bgcode',
     addedLines: added.split(job.newline).slice(0, -1),
@@ -37,13 +44,13 @@ export async function prepareBgcodeExport(original: File, source: File, binary: 
 }
 
 /** The review and download share this immutable output; never regenerate on download. */
-export function prepareExport(source: File, job: ParsedJob, brim: BrimResult, mode: ExportMode): PreparedExport {
+export function prepareExport(source: File, job: ParsedJob, brim: BrimResult, mode: ExportMode, acceptedConcerns: readonly string[] = []): PreparedExport {
   if (source.size !== job.bytes) throw new Error('The source file does not match this preview.');
-  const added = createInsertion(job, brim, mode);
+  const added = createInsertion(job, brim, mode, acceptedConcerns);
   const { byteOffset, line } = job.insertion!;
   validateGeneratedGcode(added, mode);
   return {
-    source,
+    source, concerns: job.concerns.map(issue => ({ ...issue })), warnings: [...job.warnings, ...brim.warnings],
     output: new Blob([source.slice(0, byteOffset), added, source.slice(byteOffset)], { type: 'text/plain;charset=utf-8' }),
     name: source.name.replace(/\.(gcode|gco|gc)$/i, '') + '_rolling_brim.gcode',
     addedLines: added.split(job.newline).slice(0, -1),

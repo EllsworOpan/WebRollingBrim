@@ -6,8 +6,8 @@ import { bgcodeCrc32, decodeBgcode, encodeBgcodeBlocks, isBgcode } from '../src/
 import { decodeSource } from '../src/core/source';
 import { parseGcode } from '../src/core/gcode';
 import { buildFootprint, generateBrim } from '../src/core/geometry';
-import { createInsertion, exportBlockers } from '../src/core/export';
-import { indexLines, prepareBgcodeExport, readDiffRows } from '../src/core/export-review';
+import { createInsertion, exportBlockers, hardExportBlockers } from '../src/core/export';
+import { assertReviewAccepted, indexLines, prepareBgcodeExport, readDiffRows } from '../src/core/export-review';
 import { DEFAULT_BRIM } from '../src/core/types';
 import { fixtureSource } from './fixtures';
 
@@ -52,6 +52,34 @@ function fixture(compression = 0, encoding = 0, checksum = true, parts = [body])
 }
 
 describe('binary G-code import and export', () => {
+  it('requires scoped acceptance for binary export and still enforces its late allowlist', async () => {
+    const input = fixture(1, 0, true, [body.replace('G21', 'M573 R\nG21')]);
+    const decoded = await decodeBgcode(input), job = parseGcode(decode(decoded.bytes));
+    const brim = generateBrim(buildFootprint(job), job, DEFAULT_BRIM);
+    const original = new File([input], 'part.bgcode'), source = new File([decoded.bytes], 'part.bgcode');
+    await expect(prepareBgcodeExport(original, source, decoded.index, job, brim, 'standard')).rejects.toThrow(/acceptance/);
+    const ids = job.concerns.map(issue => issue.id);
+    const review = await prepareBgcodeExport(original, source, decoded.index, job, brim, 'standard', ids);
+    expect(() => assertReviewAccepted(review, [])).toThrow(/confirm/);
+    expect(() => assertReviewAccepted(review, ids)).not.toThrow();
+    const roundtrip = await decodeBgcode(new Uint8Array(await review.output.arrayBuffer()));
+    expect(decode(roundtrip.bytes).replace(createInsertion(job, brim, 'standard', ids), '')).toBe(decode(decoded.bytes));
+    job.insertion!.state.type = 'Custom\nM104 S280';
+    await expect(prepareBgcodeExport(original, source, decoded.index, job, brim, 'standard', ids)).rejects.toThrow(/disallowed command/);
+  });
+
+  it.skipIf(!process.env.ROLLING_BRIM_TEST_BGCODE)('reviews and roundtrips a private binary startup fixture', async () => {
+    const input = new Uint8Array(readFileSync(process.env.ROLLING_BRIM_TEST_BGCODE!));
+    const decoded = await decodeBgcode(input), job = parseGcode(decode(decoded.bytes));
+    expect(hardExportBlockers(job)).toEqual([]);
+    const brim = generateBrim(buildFootprint(job), job, { ...DEFAULT_BRIM, lineWidth: job.settings.lineWidth });
+    const ids = job.concerns.map(issue => issue.id);
+    const review = await prepareBgcodeExport(new File([input], 'private.bgcode'), new File([decoded.bytes], 'private.bgcode'), decoded.index, job, brim, 'standard', ids);
+    const roundtrip = await openBgcode(new Uint8Array(await review.output.arrayBuffer()));
+    expect(decode(roundtrip.gcode).replace(createInsertion(job, brim, 'standard', ids), '')).toBe(decode((await openBgcode(input)).gcode));
+    assertReviewAccepted(review, ids);
+  });
+
   for (const compression of [0, 1, 2, 3]) for (const encoding of [0, 1, 2]) {
     it(`decodes compression ${compression}, encoding ${encoding}, and metadata into the existing interpreter`, async () => {
       // MeatPack starts with packing disabled; literal input is valid in that

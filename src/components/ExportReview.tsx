@@ -3,9 +3,11 @@ import { ArrowDownToLine, Check, FileDiff, LoaderCircle, X } from 'lucide-react'
 import { indexLines, type PreparedExport } from '../core/export-review';
 import { diffSections, diffRowCount, diffViewport, displayRowForOutput, readReviewRows, scrollTopForRow, type FoldId, type ReviewRow } from '../core/diff-view';
 import SafetyNotice from './SafetyNotice';
+import ExportConcerns from './ExportConcerns';
+import ExportConfirmation from './ExportConfirmation';
 
 export default function ExportReview({ review, onClose, onDownload }: {
-  review: PreparedExport; onClose: () => void; onDownload: (review: PreparedExport) => void;
+  review: PreparedExport; onClose: () => void; onDownload: (review: PreparedExport, acceptedConcerns: string[]) => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null), scroller = useRef<HTMLDivElement>(null);
   const pendingTarget = useRef<number | null>(review.insertionLine - 1);
@@ -15,6 +17,10 @@ export default function ExportReview({ review, onClose, onDownload }: {
   const [expanded, setExpanded] = useState<FoldId[]>([]), [jump, setJump] = useState('');
   const [viewport, setViewport] = useState({ top: 0, height: 400 });
   const [downloaded, setDownloaded] = useState(false);
+  const [accepted, setAccepted] = useState<string[]>([]), [confirming, setConfirming] = useState(false);
+  const concerns = review.concerns || [];
+  const acceptedAll = concerns.every(issue => accepted.includes(issue.id));
+  useEffect(() => { setAccepted([]); setConfirming(false); setDownloaded(false); }, [review]);
   const insertion = review.insertionLine - 1, added = review.addedLines.length;
   const total = (index?.length ?? 0) + added;
   const sections = useMemo(() => index ? diffSections(index.length, insertion, added, expanded) : [], [index, insertion, added, expanded]);
@@ -81,12 +87,19 @@ export default function ExportReview({ review, onClose, onDownload }: {
     <div className="review-shell">
       <header className="review-header">
         <div><span className="eyebrow">{review.format === 'bgcode' ? 'DECODED G-CODE · BINARY DOWNLOAD' : 'EXACT DOWNLOAD PREVIEW'}</span><h2 id="export-review-title"><FileDiff size={21} />Export review</h2></div>
-        <div className="review-header-actions"><button className="button button-primary" disabled={!index || !!error} onClick={() => { onDownload(review); setDownloaded(true); }}><ArrowDownToLine size={16} />Download G-code</button><button className="icon-button" aria-label="Close export review" onClick={onClose} autoFocus><X size={21} /></button></div>
+        <div className="review-header-actions"><button className="button button-primary" disabled={!index || !!error || !acceptedAll} onClick={() => { if (concerns.length) setConfirming(true); else { onDownload(review, []); setDownloaded(true); } }}><ArrowDownToLine size={16} />{concerns.length ? 'Export with assumptions…' : 'Download G-code'}</button><button className="icon-button" aria-label="Close export review" onClick={onClose} autoFocus><X size={21} /></button></div>
       </header>
       <div className="review-summary"><span className="diff-added-count">+{added.toLocaleString()} added</span><span className="diff-removed-count">−0 removed</span><span>0 changed</span><span className="review-preserved" role="status"><Check size={14} />{downloaded && 'Download started · '}{review.format === 'bgcode' ? 'Original commands preserved' : 'Original bytes preserved'}</span></div>
+      <div className="review-context">
       <p className="review-location">One block at original line <strong>{review.insertionLine.toLocaleString()}</strong>. {review.insertionDescription} Green <b>+</b> lines are added; unchanged lines provide context.</p>
       {review.format === 'bgcode' && <p className="review-location">Review shows decoded commands. Download stays .bgcode; metadata, thumbnails and untouched binary blocks are preserved.</p>}
       <SafetyNotice compact />
+      {(concerns.length > 0 || !!review.warnings?.length) && <details className="review-issues" open={concerns.length > 0}>
+        <summary>{concerns.length ? `${concerns.length} unresolved concerns — acceptance required` : `${review.warnings!.length} minor concerns — export allowed`}</summary>
+        <ExportConcerns concerns={concerns} accepted={accepted} onAccept={(id, value) => setAccepted(previous => value ? [...previous, id] : previous.filter(item => item !== id))} />
+        {!!review.warnings?.length && <ul>{review.warnings.map(warning => <li key={warning}>{warning}</li>)}</ul>}
+      </details>}
+      </div>
       <div className="review-controls">
         <div className="view-tabs" role="group" aria-label="Diff layout"><button className={layout === 'unified' ? 'active' : ''} aria-pressed={layout === 'unified'} onClick={() => setLayout('unified')}>Unified</button><button className={layout === 'split' ? 'active' : ''} aria-pressed={layout === 'split'} onClick={() => setLayout('split')}>Side by side</button></div>
         <button className="review-link" disabled={!index} onClick={compact}>Compact view</button>
@@ -123,5 +136,6 @@ export default function ExportReview({ review, onClose, onDownload }: {
         <span>{index && `${total.toLocaleString()} export lines · Continuous scroll`}</span>
       </footer>
     </div>
+    {confirming && <ExportConfirmation review={review} onCancel={() => setConfirming(false)} onConfirm={() => { onDownload(review, accepted); setDownloaded(true); setConfirming(false); }} />}
   </dialog>;
 }

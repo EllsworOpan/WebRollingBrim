@@ -33,7 +33,26 @@
 
 .export-review { width: min(1400px, 96vw); height: min(940px, 94dvh); max-width: none; max-height: none; padding: 0; color: var(--text); background: #111b21; border: 1px solid #3a4b55; border-radius: 12px; box-shadow: 0 30px 100px #0009; }
 .export-review::backdrop { background: #030b10cf; backdrop-filter: blur(4px); }
-.review-shell { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.review-shell { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden; }
+.review-shell > :not(.review-context):not(.diff-scroller) { flex-shrink: 0; }
+.review-context { flex: 0 1 auto; min-height: 0; max-height: 38dvh; overflow: auto; overscroll-behavior: contain; }
+.export-concerns { margin-top: 16px; padding: 16px; border: 1px solid #705032; border-radius: 7px; background: #3b282033; font-size: 12px; line-height: 1.6; }
+.export-concerns > strong { display: flex; align-items: center; gap: 8px; color: #e7b697; }
+.export-concerns > p { margin-top: 8px; color: #b6c4cb; }
+.concern-list { list-style: none; padding: 0; margin: 12px 0; }
+.concern-list > li { padding: 12px 0; border-top: 1px solid #ffffff15; }
+.concern-list code { display: block; overflow-wrap: anywhere; color: #ead2af; margin: 5px 0; }
+.concern-list p { margin: 6px 0; color: #b6c4cb; }
+.concern-accept { display: flex; align-items: flex-start; gap: 10px; margin-top: 12px; line-height: 1.5; }
+.concern-accept input { flex-shrink: 0; margin-top: 4px; }
+.review-issues { margin: 0 24px 12px; padding: 12px 16px; background: #3b282033; border: 1px solid #705032; border-radius: 6px; font-size: 12px; line-height: 1.6; }
+.review-issues summary { cursor: pointer; color: #e7b697; }
+.export-confirmation { width: min(620px, calc(100vw - 32px)); max-height: 85vh; overflow-y: auto; padding: 26px; border: 1px solid #705032; border-radius: 10px; background: #18242b; color: #d9e2e7; font-size: 13px; line-height: 1.65; box-shadow: 0 20px 70px #0009; }
+.export-confirmation::backdrop { background: #080d12b8; }
+.export-confirmation h2 { font-size: 21px; margin: 0 0 12px; }
+.export-confirmation p { margin-top: 12px; overflow-wrap: anywhere; }
+.confirmation-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; flex-wrap: wrap; }
+.confirmation-actions .button:not(.button-primary) { background: #2b3a43; color: #d9e2e7; }
 .review-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 20px 24px 14px; }
 .review-header h2 { display: flex; align-items: center; gap: 9px; font-size: 20px; font-weight: 550; margin-top: 7px; }
 .review-header-actions { display: flex; align-items: center; gap: 14px; }
