@@ -16,6 +16,7 @@
     "prebuild": "npm run licenses:check"
   },
   "dependencies": {
+    "@chestnutlabs/gcode-bgcode": "0.20.1",
     "clipper2-ts": "2.0.1-18",
     "gcode-preview": "3.0.0-alpha.6",
     "lucide-react": "^0.468.0",

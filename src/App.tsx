@@ -4,7 +4,7 @@ import FirstLayerView from './components/FirstLayerView';
 import ExportReview from './components/ExportReview';
 import SafetyNotice from './components/SafetyNotice';
 import { exportBlockers } from './core/export';
-import { prepareExport, type PreparedExport } from './core/export-review';
+import { prepareBgcodeExport, prepareExport, type PreparedExport } from './core/export-review';
 import { DEFAULT_BRIM, type BrimResult, type BrimSettings, type ExportMode, type LoadedJob, type WorkerRequest, type WorkerResponse } from './core/types';
 import sampleUrl from '../examples/gcodes/clearance-test-plate.gcode?url';
 import sampleModelUrl from '../examples/models/clearance-test-plate.stl?url';
@@ -49,6 +49,7 @@ function EmptyIllustration() {
 
 export default function App() {
   const [loaded, setLoaded] = useState<LoadedJob | null>(null), [file, setFile] = useState<File | null>(null);
+  const [binaryFile, setBinaryFile] = useState<File | null>(null);
   const [brim, setBrim] = useState<BrimResult | null>(null), [settings, setSettings] = useState<BrimSettings>(DEFAULT_BRIM);
   const [exportMode, setExportMode] = useState<ExportMode>('standard');
   const [review, setReview] = useState<PreparedExport | null>(null);
@@ -68,12 +69,12 @@ export default function App() {
   useEffect(() => { if (help) { const close = (event: KeyboardEvent) => { if (event.key === 'Escape') setHelp(false); }; window.addEventListener('keydown', close); return () => window.removeEventListener('keydown', close); } }, [help]);
 
   const loadFile = useCallback(async (incoming: File, isDemo = false) => {
-    if (!/\.(gcode|gco|gc)$/i.test(incoming.name)) { setError('Choose a plain-text .gcode file exported by PrusaSlicer. Binary .bgcode files are not supported.'); return; }
+    if (!/\.(bgcode|gcode|gco|gc)$/i.test(incoming.name)) { setError('Choose a .gcode or .bgcode file exported by PrusaSlicer.'); return; }
     if (incoming.size > 200_000_000) { setError('This file exceeds the 200 MB browser limit. Try a smaller G-code file.'); return; }
     worker.current?.terminate();
     if (generationTimer.current) clearTimeout(generationTimer.current);
     const id = ++requestId.current;
-    setLoaded(null); setBrim(null); setFile(incoming); setError(''); setStatus('Opening G-code…'); setProbe(false); setExportMode('standard'); setReview(null);
+    setLoaded(null); setBrim(null); setFile(incoming); setBinaryFile(null); setError(''); setStatus('Opening G-code…'); setProbe(false); setExportMode('standard'); setReview(null);
     setDemo(isDemo);
     if (isDemo) { setSettings(DEFAULT_BRIM); setView('2d'); }
     const instance = new Worker(new URL('./core/worker.ts', import.meta.url), { type: 'module' });
@@ -84,7 +85,8 @@ export default function App() {
       if (message.type === 'progress') setStatus(message.message);
       if (message.type === 'error') { setError(message.message); setStatus(''); }
       if (message.type === 'loaded') {
-        if (!message.value.geometry.model.length) { setError('No usable first-layer model footprint was found. Export a complete text G-code file from PrusaSlicer.'); setStatus(''); return; }
+        if (!message.value.geometry.model.length) { setError('No usable first-layer model footprint was found. Export a complete G-code file from PrusaSlicer.'); setStatus(''); return; }
+        if (message.decoded) { setFile(new File([message.decoded], incoming.name, { type: 'text/plain' })); setBinaryFile(incoming); }
         setLoaded(message.value); setLayer(message.value.job.layerCount);
         setSettings(previous => ({ ...previous, lineWidth: message.value.job.settings.lineWidth, speed: message.value.job.settings.printSpeed, travelLift: message.value.job.settings.zHop }));
         setStatus('Preparing rolling brim…');
@@ -117,18 +119,24 @@ export default function App() {
       await loadFile(new File([blob], 'clearance-test-plate.gcode', { type: 'text/plain' }), true);
     } catch (reason) { setError((reason as Error).message); setStatus(''); }
   };
-  const reviewGcode = () => {
+  const reviewGcode = async () => {
     if (!loaded || !file || !brim || !sameSettings(settings, brim.settings)) return;
+    const id = requestId.current;
+    setStatus('Preparing export…');
     try {
-      setReview(prepareExport(file, loaded.job, brim, exportMode));
-    } catch (reason) { setError((reason as Error).message); }
+      const prepared = binaryFile && loaded.bgcode
+        ? await prepareBgcodeExport(binaryFile, file, loaded.bgcode, loaded.job, brim, exportMode)
+        : prepareExport(file, loaded.job, brim, exportMode);
+      if (id === requestId.current) setReview(prepared);
+    } catch (reason) { if (id === requestId.current) setError((reason as Error).message); }
+    finally { if (id === requestId.current) setStatus(''); }
   };
   const downloadGcode = (prepared: PreparedExport) => {
     try {
       const url = URL.createObjectURL(prepared.output); downloadUrls.current.push(url);
       const link = document.createElement('a'); link.href = url; link.download = prepared.name;
       document.body.append(link); link.click(); link.remove();
-      setToast('Download started from the reviewed output. All original lines are preserved.');
+      setToast(prepared.format === 'bgcode' ? 'Binary download started. Original commands and metadata are preserved.' : 'Download started from the reviewed output. All original lines are preserved.');
     } catch (reason) { setError((reason as Error).message); }
   };
   const blockers = loaded ? exportBlockers(loaded.job, exportMode) : [];
@@ -142,7 +150,7 @@ export default function App() {
     onDragOver={event => event.preventDefault()}
     onDragLeave={event => { event.preventDefault(); if (--dragDepth.current <= 0) { dragDepth.current = 0; setDragging(false); } }}
     onDrop={event => { event.preventDefault(); dragDepth.current = 0; setDragging(false); const first = event.dataTransfer.files[0]; if (first) void loadFile(first); }}>
-    <input ref={input} className="visually-hidden" tabIndex={-1} aria-label="Open G-code file" type="file" accept=".gcode,.gco,.gc" onChange={event => { const incoming = event.target.files?.[0]; if (incoming) void loadFile(incoming); event.target.value = ''; }} />
+    <input ref={input} className="visually-hidden" tabIndex={-1} aria-label="Open G-code file" type="file" accept=".gcode,.gco,.gc,.bgcode" onChange={event => { const incoming = event.target.files?.[0]; if (incoming) void loadFile(incoming); event.target.value = ''; }} />
     <header className="app-header">
       <div className="brand"><img src={`${import.meta.env.BASE_URL}favicon.svg`} alt="" /><div>Rolling Brim<span>FIRST LAYER, RECONSIDERED.</span></div><span className="version-tag">BETA</span></div>
       <div className="header-actions"><span className="local-label"><LockKeyhole size={13} /> Local to your browser</span><button className="icon-button help-button" title="How Rolling Brim works" aria-label="How Rolling Brim works" onClick={() => setHelp(true)}><CircleHelp size={19} /></button><button className="button button-primary export-button" disabled={!canExport} onClick={reviewGcode}><FileDiff size={17} /> Review export</button></div>
@@ -153,7 +161,7 @@ export default function App() {
         <div className="sidebar-top"><span className="eyebrow">BRIM WORKSPACE</span><SlidersHorizontal size={16} /></div>
         <button className={`source-card ${loaded ? 'has-file' : ''}`} onClick={() => input.current?.click()}>
           <span className="source-icon">{loaded ? <FileCode2 size={20} /> : <Upload size={20} />}</span>
-          <span className="source-text"><strong title={file?.name}>{loaded ? file?.name : 'Open a G-code file'}</strong><span>{loaded ? `${formatBytes(loaded.job.bytes)} · ${loaded.job.layerCount} layers` : 'PrusaSlicer · .gcode'}</span></span><span className="source-arrow"><ArrowUpRight size={16} /></span>
+          <span className="source-text"><strong title={file?.name}>{loaded ? file?.name : 'Open a G-code file'}</strong><span>{loaded ? `${formatBytes(binaryFile?.size ?? loaded.job.bytes)} · ${loaded.job.layerCount} layers${binaryFile ? ' · bgcode' : ''}` : 'PrusaSlicer · .gcode / .bgcode'}</span></span><span className="source-arrow"><ArrowUpRight size={16} /></span>
         </button>
         {loaded && <button className="sample-link sidebar-sample" onClick={() => void loadSample()} disabled={!!status}>Load clearance test plate <ArrowUpRight size={14} /></button>}
 

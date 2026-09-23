@@ -1,3 +1,5 @@
+import type { BgcodeIndex } from './bgcode';
+
 export interface Point { x: number; y: number }
 export type Ring = Point[];
 export type Rings = Ring[];
@@ -77,12 +79,12 @@ export interface BrimResult {
   clippedArea: number; avoidedArea: number;
   warnings: string[]; computeMs: number;
 }
-export interface LoadedJob { job: ParsedJob; geometry: GeometryContext }
+export interface LoadedJob { job: ParsedJob; geometry: GeometryContext; bgcode?: BgcodeIndex }
 export type WorkerRequest =
   | { type: 'load'; id: number; name: string; bytes: ArrayBuffer }
   | { type: 'generate'; id: number; settings: BrimSettings };
 export type WorkerResponse =
-  | { type: 'loaded'; id: number; value: LoadedJob }
+  | { type: 'loaded'; id: number; value: LoadedJob; decoded?: Blob }
   | { type: 'generated'; id: number; value: BrimResult }
   | { type: 'progress'; id: number; message: string }
   | { type: 'error'; id: number; message: string };

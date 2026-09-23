@@ -80,11 +80,12 @@ export default function ExportReview({ review, onClose, onDownload }: {
     onCancel={event => { event.preventDefault(); onClose(); }} onClick={event => { if (event.target === event.currentTarget) onClose(); }}>
     <div className="review-shell">
       <header className="review-header">
-        <div><span className="eyebrow">EXACT DOWNLOAD PREVIEW</span><h2 id="export-review-title"><FileDiff size={21} />Export review</h2></div>
+        <div><span className="eyebrow">{review.format === 'bgcode' ? 'DECODED G-CODE · BINARY DOWNLOAD' : 'EXACT DOWNLOAD PREVIEW'}</span><h2 id="export-review-title"><FileDiff size={21} />Export review</h2></div>
         <div className="review-header-actions"><button className="button button-primary" disabled={!index || !!error} onClick={() => { onDownload(review); setDownloaded(true); }}><ArrowDownToLine size={16} />Download G-code</button><button className="icon-button" aria-label="Close export review" onClick={onClose} autoFocus><X size={21} /></button></div>
       </header>
-      <div className="review-summary"><span className="diff-added-count">+{added.toLocaleString()} added</span><span className="diff-removed-count">−0 removed</span><span>0 changed</span><span className="review-preserved" role="status"><Check size={14} />{downloaded ? 'Download started · original bytes preserved' : 'Original bytes preserved'}</span></div>
+      <div className="review-summary"><span className="diff-added-count">+{added.toLocaleString()} added</span><span className="diff-removed-count">−0 removed</span><span>0 changed</span><span className="review-preserved" role="status"><Check size={14} />{downloaded && 'Download started · '}{review.format === 'bgcode' ? 'Original commands preserved' : 'Original bytes preserved'}</span></div>
       <p className="review-location">One block at original line <strong>{review.insertionLine.toLocaleString()}</strong>. {review.insertionDescription} Green <b>+</b> lines are added; unchanged lines provide context.</p>
+      {review.format === 'bgcode' && <p className="review-location">Review shows decoded commands. Download stays .bgcode; metadata, thumbnails and untouched binary blocks are preserved.</p>}
       <SafetyNotice compact />
       <div className="review-controls">
         <div className="view-tabs" role="group" aria-label="Diff layout"><button className={layout === 'unified' ? 'active' : ''} aria-pressed={layout === 'unified'} onClick={() => setLayout('unified')}>Unified</button><button className={layout === 'split' ? 'active' : ''} aria-pressed={layout === 'split'} onClick={() => setLayout('split')}>Side by side</button></div>

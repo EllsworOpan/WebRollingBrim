@@ -19,7 +19,10 @@ for (const [path, entry] of Object.entries(lock.packages).sort(([a], [b]) => a.l
   const pkg = JSON.parse(read(`${path}/package.json`));
   if (pkg.version !== entry.version) throw new Error(`${pkg.name}: run npm ci to install the locked version.`);
   const files = readdirSync(resolve(root, path)).filter(name => /^licen[cs]e(?:$|\.)/i.test(name)).sort();
-  if (!files.length) throw new Error(`Missing license text for ${pkg.name}; review its distribution terms.`);
+  // These pinned packages omit the monorepo license from their npm archives.
+  // Keep reviewed upstream copies in the repo rather than modifying node_modules.
+  const chestnut = ['@chestnutlabs/gcode-bgcode', '@chestnutlabs/gcode-containers', '@chestnutlabs/toolpath-core'].includes(pkg.name);
+  if (!files.length && !chestnut) throw new Error(`Missing license text for ${pkg.name}; review its distribution terms.`);
   const repository = typeof pkg.repository === 'string' ? pkg.repository : pkg.repository?.url;
   const source = (repository || pkg.homepage || '').replace(/^git\+/, '').replace(/\.git$/, '');
   let attribution = '';
@@ -34,7 +37,8 @@ for (const [path, entry] of Object.entries(lock.packages).sort(([a], [b]) => a.l
     attribution = `\n${pkg.author}\n${[...notices].sort().join('\n')}\n`;
   }
   sections.push(`${pkg.name} ${pkg.version} — ${pkg.license}\n${source}\n${attribution}\n` +
-    files.map(file => read(`${path}/${file}`).trimEnd()).join('\n\n'));
+    (files.length ? files.map(file => read(`${path}/${file}`).trimEnd()).join('\n\n') : read('licenses/chestnutlabs-MIT.txt').trimEnd()) +
+    (pkg.name === '@chestnutlabs/gcode-bgcode' ? '\n\nMeatPack decoder attribution:\n' + read('licenses/meatpack-MIT.txt').trimEnd() + '\n\nHeatshrink decoder attribution:\n' + read('licenses/heatshrink-ISC.txt').trimEnd() : ''));
 }
 
 const outputs = {

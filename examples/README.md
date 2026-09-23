@@ -29,6 +29,14 @@ Slice with PrusaSlicer 2.9.6 (adjust the executable path for your system):
 
 The isolated data directory keeps fixture generation separate from personal slicer presets. Regeneration may change the slicer's generation timestamp. CI uses the checked-in assets and does not need PrusaSlicer installed.
 
+The matching `gcodes/clearance-test-plate.bgcode` is generated from the same original model/profile with PrusaSlicer 2.9.6:
+
+```powershell
+& 'C:\Program Files\Prusa3D\PrusaSlicer\prusa-slicer-console.exe' --datadir .local/prusaslicer-demo --load examples/demo.ini --center 70,70 --binary-gcode --thumbnails '32x32/PNG' --export-gcode --output examples/gcodes/clearance-test-plate.bgcode examples/models/clearance-test-plate.stl
+```
+
+It exercises real heatshrink 12/4, MeatPack with comments, DEFLATE metadata and CRC32. Binary regressions compare its paths/settings with the text fixture, verify the exported file using a separate container decoder, and preserve original decoded commands and untouched binary blocks. Synthetic fixtures also cover the other codecs, thumbnails, optional CRCs, malformed input and the runtime command allowlist. This binary fixture is for tests; the in-app sample remains the text version.
+
 ## Tests and private samples
 
 `gcodes/Shape-Box_0.2mm_PLA_V2_40m.gcode` is the user-supplied PrusaSlicer box reference, preserved verbatim. It includes a separate skirt followed by eleven brim loops at approximately 0.437 mm spacing. Its brim transitions are short XY moves without retraction or lift. The toolpath regression checks that spacing, sequencing, and every loop's straight-edge positions (within 0.003 mm). It also measures the remaining corner approximation separately (about 0.12 mm maximum), without treating different seam locations as a geometry mismatch. This reference is used in tests, not bundled as a website demo. Its existing brim remains protected from overlap when opened normally in the app.

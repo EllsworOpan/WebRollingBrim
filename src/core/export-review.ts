@@ -1,5 +1,6 @@
 import { createInsertion } from './export';
 import { validateGeneratedGcode } from './generated-gcode';
+import { encodeBgcodeBlocks, type BgcodeIndex } from './bgcode';
 import type { BrimResult, ExportMode, ParsedJob } from './types';
 
 export interface PreparedExport {
@@ -10,6 +11,29 @@ export interface PreparedExport {
   insertionLine: number;
   insertionByteOffset: number;
   insertionDescription: string;
+  format?: 'bgcode';
+}
+
+/** The diff uses decoded source lines; the immutable download remains binary. */
+export async function prepareBgcodeExport(original: File, source: File, binary: BgcodeIndex, job: ParsedJob, brim: BrimResult, mode: ExportMode): Promise<PreparedExport> {
+  if (original.size !== binary.sourceBytes || source.size !== job.bytes) throw new Error('The source file does not match this preview.');
+  const added = createInsertion(job, brim, mode);
+  const { byteOffset, line } = job.insertion!;
+  const block = binary.blocks.find(part => byteOffset >= part.textStart && byteOffset < part.textEnd);
+  if (!block) throw new Error('The insertion point is outside the binary G-code blocks.');
+  const before = await source.slice(block.textStart, byteOffset).arrayBuffer();
+  const after = await source.slice(byteOffset, block.textEnd).arrayBuffer();
+  // Check the final generated commands immediately before combining them with
+  // original decoded bytes and wrapping the changed region in binary blocks.
+  validateGeneratedGcode(added, mode);
+  const changed = new Uint8Array(await new Blob([before, added, after]).arrayBuffer());
+  return {
+    source, format: 'bgcode',
+    output: new Blob([original.slice(0, block.start), ...encodeBgcodeBlocks(changed, binary.checksum), original.slice(block.end)], { type: 'application/octet-stream' }),
+    name: original.name.replace(/\.(bgcode|gcode|gco|gc)$/i, '') + '_rolling_brim.bgcode',
+    addedLines: added.split(job.newline).slice(0, -1),
+    insertionLine: line, insertionByteOffset: byteOffset, insertionDescription: job.insertion!.reason,
+  };
 }
 
 /** The review and download share this immutable output; never regenerate on download. */
