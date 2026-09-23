@@ -1,4 +1,5 @@
 import { createInsertion } from './export';
+import { validateGeneratedGcode } from './generated-gcode';
 import type { BrimResult, ExportMode, ParsedJob } from './types';
 
 export interface PreparedExport {
@@ -16,6 +17,7 @@ export function prepareExport(source: File, job: ParsedJob, brim: BrimResult, mo
   if (source.size !== job.bytes) throw new Error('The source file does not match this preview.');
   const added = createInsertion(job, brim, mode);
   const { byteOffset, line } = job.insertion!;
+  validateGeneratedGcode(added, mode);
   return {
     source,
     output: new Blob([source.slice(0, byteOffset), added, source.slice(byteOffset)], { type: 'text/plain;charset=utf-8' }),

@@ -6,7 +6,6 @@ import { createInsertion, exportBlockers, exportBytes } from '../src/core/export
 import { DEFAULT_BRIM, type ExportMode } from '../src/core/types';
 import { fixtureSource } from './fixtures';
 
-const forbidden = /^(?:M10[4679]|M1[49]0|M19[01]|M20[15]|M22[01]|M572|M900|SET_PRESSURE_ADVANCE|SET_VELOCITY_LIMIT|SET_FAN_SPEED|SET_HEATER_TEMPERATURE)\b/m;
 const sample = readFileSync(new URL('../examples/gcodes/clearance-test-plate.gcode', import.meta.url), 'utf8');
 const approachSource = () => fixtureSource().replace('G1 X20 Y20 Z0.2 F1200', [
   'G1 X5 Y5 Z0.2 F600', 'M204 S1000', 'G1 E-0.8 F2100', 'G1 Z0.6 F600',
@@ -79,7 +78,26 @@ function prepare(source: string, mode: ExportMode = 'standard', lift = 0.4) {
   const resumed = replay(prefix + added + continuation, job.flavor).state;
   expect(resumed).toEqual({ ...original, e: resumed.e, debt: expect.closeTo(original.debt, 8) });
   if (mode === 'klipper') expect(resumed.e).toBeCloseTo(original.e, 8);
-  expect(added).not.toMatch(forbidden);
+  // Positive output contract: an unlisted command or parameter fails even if
+  // nobody has thought to add it to a list of forbidden printer settings.
+  const number = '-?\\d+(?:\\.\\d+)?', positive = '\\d+(?:\\.\\d+)?';
+  const motion = new RegExp(`^G1(?= )(?: X${number})?(?: Y${number})?(?: Z${number})?(?: E${number})?(?: F${positive})?$`);
+  const acceleration = new RegExp(`^M204 [${job.flavor === 'klipper' ? 'S' : 'PT'}]${positive}$`);
+  let feed = job.insertion!.state.f;
+  const activeAcceleration = { ...job.insertion!.state.acceleration };
+  for (const line of added.split(/\r\n|\n|\r/).filter(line => line && !line.startsWith(';'))) {
+    const snapshot = mode === 'klipper' && ['SAVE_GCODE_STATE NAME=ROLLING_BRIM_APP', 'RESTORE_GCODE_STATE NAME=ROLLING_BRIM_APP MOVE=0'].includes(line);
+    expect(motion.test(line) || acceleration.test(line) || snapshot, `Command outside the generated-code allowlist: ${line}`).toBe(true);
+    const feedWord = line.match(/\bF([\d.]+)/);
+    if (feedWord) { expect(Number(feedWord[1]), `Redundant feed: ${line}`).not.toBe(feed); feed = Number(feedWord[1]); }
+    const accelerationWord = line.match(/^M204 ([SPT])([\d.]+)$/);
+    if (accelerationWord) {
+      const field = accelerationWord[1] === 'T' ? 'travel' : 'print', value = Number(accelerationWord[2]);
+      expect(value, `Redundant acceleration: ${line}`).not.toBe(activeAcceleration[field]);
+      if (accelerationWord[1] === 'S') activeAcceleration.print = activeAcceleration.travel = value;
+      else activeAcceleration[field] = value;
+    }
+  }
   expect(added).not.toMatch(/NaN|Infinity/);
   return { job, brim, added, after, prefix, bytes };
 }
@@ -149,6 +167,35 @@ describe('insertion planning and original continuation', () => {
     expect(added).toContain('M204 T4000');
     expect(added).not.toMatch(/^M204 .*\b[RS]/m);
     expect(after.state.retract).toBe(700);
+  });
+
+  for (const flavor of ['klipper', 'marlin', 'marlin2']) it(`omits acceleration commands when the required values are already active (${flavor})`, () => {
+    const source = approachSource().replace('gcode_flavor = klipper', `gcode_flavor = ${flavor}`)
+      .replace('M204 S1000', flavor === 'klipper' ? 'M204 S300' : 'M204 P300 T4000 R700')
+      .replace('M204 S4000', flavor === 'klipper' ? 'M204 S300' : 'M204 T4000')
+      .replace('M204 S300\nG1 F1200', flavor === 'klipper' ? 'M204 S300\nG1 F1200' : 'M204 P300\nG1 F1200');
+    const { job, added } = prepare(source);
+    expect(job.insertion!.kind).toBe('travel');
+    expect(added).not.toMatch(/^M204/m);
+  });
+
+  it('does not set travel acceleration for a handoff with no generated motion', () => {
+    const source = approachSource().replace('G1 E-0.8 F2100\n', '').replace('G1 Z0.6 F600\n', '')
+      .replace('G1 E0.8 F1800\n', '').replace('; retract_length = 0.8', '; retract_length = 0');
+    const { job, added } = prepare(source, 'standard', 0);
+    expect(job.insertion!.kind).toBe('travel');
+    const handoff = added.slice(added.indexOf('; BRIM_HANDOFF'));
+    expect(handoff.split('\n').filter(line => line && !line.startsWith(';'))).toEqual([]);
+  });
+
+  it('does not change acceleration or feed for a stationary step between paths', () => {
+    const { job, brim } = prepare(approachSource());
+    const added = createInsertion(job, { ...brim, paths: [
+      [{ x: 10, y: 10 }, { x: 11, y: 10 }],
+      [{ x: 11, y: 10 }, { x: 12, y: 10 }],
+    ], transitions: ['travel', 'step'] });
+    const step = added.split('; BRIM_STEP')[1].split('; BRIM_HANDOFF')[0].trim();
+    expect(step).toMatch(/^G1 X12 E[\d.]+$/);
   });
 
   it('honors Klipper P/T semantics instead of treating them as independent settings', () => {

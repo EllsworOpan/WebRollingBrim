@@ -1,5 +1,6 @@
 import { extrusionPerMm } from './gcode';
 import { validateBrimSettings } from './geometry';
+import { validateGeneratedGcode } from './generated-gcode';
 import type { BrimResult, ExportMode, ParsedJob } from './types';
 
 const decimal = (value: number): string => {
@@ -67,7 +68,8 @@ export function createInsertion(job: ParsedJob, brim: BrimResult, mode: ExportMo
       acceleration = { ...acceleration, [field]: value };
     }
   };
-  const move = (axes: Partial<Record<'X' | 'Y' | 'Z' | 'E', number>>, speed: number, exact = false) => {
+  const move = (axes: Partial<Record<'X' | 'Y' | 'Z' | 'E', number>>, speed: number, exact = false,
+    accelerationField: 'print' | 'travel' = 'travel') => {
     const words: string[] = [];
     for (const axis of ['X', 'Y', 'Z', 'E'] as const) {
       if (axes[axis] === undefined) continue;
@@ -78,6 +80,12 @@ export function createInsertion(job: ParsedJob, brim: BrimResult, mode: ExportMo
       else if (position[axis] !== value) { words.push(`${axis}${decimal(value)}`); position[axis] = value; }
     }
     if (!words.length) return;
+    // Establish acceleration only for a motion that will actually be emitted.
+    // Marlin's separate retract acceleration is inherited; Klipper uses the
+    // shared travel value for our retract/unretract motions as well.
+    if (job.flavor === 'klipper' || words.some(word => /^[XYZ]/.test(word))) {
+      setAcceleration(accelerationField, plan.acceleration[accelerationField]);
+    }
     const nextFeed = Number(n(speed * 60));
     if (feed !== nextFeed) { words.push(`F${decimal(nextFeed)}`); feed = nextFeed; }
     lines.push(`G1 ${words.join(' ')}`);
@@ -90,7 +98,6 @@ export function createInsertion(job: ParsedJob, brim: BrimResult, mode: ExportMo
   const travel = (x: number, y: number, exact = false) => {
     const target = { X: exact ? x : Number(n(x)), Y: exact ? y : Number(n(y)) };
     if (position.X !== target.X || position.Y !== target.Y || position.Z !== plan.printZ) {
-      setAcceleration('travel', plan.acceleration.travel);
       // Reuse outstanding retraction and an existing lift. Never lower before XY.
       setRetraction(Math.max(retracted, p.retractLength));
       move({ Z: Math.max(position.Z, liftedZ) }, p.zSpeed, true);
@@ -104,7 +111,6 @@ export function createInsertion(job: ParsedJob, brim: BrimResult, mode: ExportMo
       // Geometry has checked this entire short connector against the printable
       // region. It adds no extrusion and does not change Z or retraction state.
       lines.push('; BRIM_STEP');
-      setAcceleration('travel', plan.acceleration.travel);
       move({ X: path[0].x, Y: path[0].y }, p.travelSpeed);
     } else {
       lines.push('; BRIM_TRAVEL');
@@ -114,8 +120,7 @@ export function createInsertion(job: ParsedJob, brim: BrimResult, mode: ExportMo
       const a = path[i - 1], b = path[i];
       const extrusion = Math.hypot(b.x - a.x, b.y - a.y) * bead;
       if (extrusion < 0.000005 || (position.X === Number(n(b.x)) && position.Y === Number(n(b.y)))) continue;
-      setAcceleration('print', plan.acceleration.print);
-      move({ X: b.x, Y: b.y, E: extrusion }, brim.settings.speed);
+      move({ X: b.x, Y: b.y, E: extrusion }, brim.settings.speed, false, 'print');
     }
   }
   if (plan.kind === 'model') {
@@ -123,7 +128,6 @@ export function createInsertion(job: ParsedJob, brim: BrimResult, mode: ExportMo
     travel(s.x, s.y, true);
   } else {
     lines.push('; BRIM_HANDOFF');
-    setAcceleration('travel', plan.acceleration.travel);
     setRetraction(Math.max(p.retractLength, plan.handoff.retracted));
     const exitZ = Math.max(liftedZ, plan.handoff.z);
     move({ Z: exitZ }, p.zSpeed, true);
@@ -159,7 +163,9 @@ export function createInsertion(job: ParsedJob, brim: BrimResult, mode: ExportMo
 
 export function exportBytes(original: Uint8Array, job: ParsedJob, brim: BrimResult, mode: ExportMode = 'standard'): Uint8Array {
   if (original.byteLength !== job.bytes) throw new Error('The source file does not match this preview.');
-  const added = new TextEncoder().encode(createInsertion(job, brim, mode));
+  const block = createInsertion(job, brim, mode);
+  validateGeneratedGcode(block, mode);
+  const added = new TextEncoder().encode(block);
   const offset = job.insertion!.byteOffset;
   const output = new Uint8Array(original.length + added.length);
   output.set(original.subarray(0, offset)); output.set(added, offset); output.set(original.subarray(offset), offset + added.length);
