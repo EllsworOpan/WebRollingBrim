@@ -10,9 +10,9 @@ const marlinSettings = [
   'M150B255', 'M151 R80', 'M250 C100', 'M255 S10', 'M256 B127', 'M300 S440 P100', 'M355 S1', 'M414 S0', 'M7219 D1',
   'M86 S180 T600', 'M87', 'M142 S45', 'M145 S0 H200 B60 F0', 'M149 F', 'M192 S30',
   'M301 E0 P22 I1 D80', 'M302 S170', 'M304 P10 I1 D300', 'M305 P0 B3950', 'M309 P10 I1 D300', 'M710 S100',
-  'M17', 'M906 E650', 'M907 E650', 'M908 P1 S100', 'M909', 'M910', 'M911', 'M912',
+  'M17', 'M906 E650', 'M907 E650', 'M908 P1 S100', 'M909', 'M911', 'M912',
   'M913 X100', 'M914 X10', 'M919 X O3 P-1 S1', 'M920 X500',
-  'M407', 'M412 S1', 'M591 S0', 'M210 X3000', 'M211 S1', 'M603 U120 L125',
+  'M403 E0 F1', 'M407', 'M412 S1', 'M591 S0', 'M210 X3000', 'M211 S1',
 ].join('\n');
 const klipperSettings = [
   'SET_HEATER_TEMPERATURE HEATER=extruder TARGET=200', 'TEMPERATURE_WAIT SENSOR=extruder MINIMUM=195',
@@ -112,7 +112,7 @@ describe('recognized input commands', () => {
   });
 
   it('does not bless motion-changing, executable, or E-counter-dependent commands as settings', () => {
-    for (const command of ['M111 S8', 'M122 I', 'M209 S1', 'M217 Q', 'M240', 'M350 X16', 'M501', 'M600', 'G12', 'G427', 'M114']) {
+    for (const command of ['M111 S8', 'M122 I', 'M209 S1', 'M217 Q', 'M240', 'M350 X16', 'M501', 'M600', 'M603', 'M603 U120 L125', 'M910', 'G12', 'G427', 'M114']) {
       const job = parseGcode(approach('marlin2').replace('G1 X40 Y40 E1', `${command}\nG1 X40 Y40 E1`));
       expect(hardExportBlockers(job).length, command).toBeGreaterThan(0);
     }

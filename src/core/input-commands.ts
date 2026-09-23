@@ -20,9 +20,13 @@ const marlinInherited = commands(`
   M16 M27 M31 M75 M76 M77 M78 M113 M119 M123 M155 M503 M504
   M150 M151 M250 M255 M256 M300 M355 M414 M7219
   M86 M87 M142 M145 M149 M192 M301 M302 M304 M305 M309 M710
-  M17 M906 M907 M908 M909 M910 M911 M912 M913 M914 M919 M920
-  M407 M412 M591 M210 M211 M603
+  M17 M906 M907 M908 M909 M911 M912 M913 M914 M919 M920
+  M403 M407 M412 M591 M210 M211
 `);
+
+// Do not infer a narrower firmware family from a printer name or marlin/marlin2.
+// M603 stops prints in legacy Prusa firmware; M910 reinitializes its drivers.
+// Their different upstream Marlin meanings do not make them inherited settings.
 
 const klipperInherited = commands(`
   SET_PRESSURE_ADVANCE SET_VELOCITY_LIMIT
