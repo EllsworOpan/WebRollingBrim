@@ -209,7 +209,8 @@ describe('G-code preservation and state', () => {
     expect(commands.every(command => ['G1', 'G90', 'G92', 'M83'].includes(command))).toBe(true);
     const prefix = new TextDecoder().decode(new TextEncoder().encode(source).slice(0, job.insertion!.byteOffset));
     const after = replay(prefix + added), end = replay(prefix + added + source.slice(prefix.length));
-    expect(after).toEqual({ ...replay(prefix), e: after.e });
+    expect(job.insertion!.kind).toBe('travel');
+    expect(after).toMatchObject({ x: 20, y: 20, z: 0.2, xyzAbs: true, eAbs: false });
     expect(end).toEqual({ ...replay(source), e: end.e });
     expect(parseGcode(source.replaceAll('G92 E0\n', '')).blockers).toEqual([]);
     expect(exportBlockers(job, 'klipper').join()).toMatch(/explicitly marked klipper/);

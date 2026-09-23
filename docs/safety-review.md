@@ -25,11 +25,17 @@ This review covers the app's insertion/export behavior, input interpretation, ge
 ## What remains outside these checks
 
 - Printer firmware configuration, calibration, hardware condition, bed clips/fixtures, thermal protection, motor/extruder limits, and commands hidden inside startup macros are not available in the file. Firmware may also redefine a command or apply runtime offsets/overrides. An eligible file cannot establish those physical facts.
-- The configured bed polygon constrains deposited brim material. Travels between disconnected regions use direct XY moves and the selected lift, not obstacle-aware routing. A zero lift intentionally means no Z lift; the app cannot prove clearance from clips, purge material hidden in macros, or nozzle hardware.
+- The configured bed polygon constrains deposited brim material. Travels between disconnected regions use direct XY moves and the selected lift, not obstacle-aware routing. A zero lift disables brim hops; required source entry/handoff heights still apply. The app cannot prove clearance from clips, purge material hidden in macros, or nozzle hardware.
 - The footprint is reconstructed from deposited G-code paths rather than original slice polygons. It is an approximation, including the documented box corner difference. Displayed bead shapes and time estimates do not simulate molten plastic or firmware acceleration.
-- The app preserves original commands, including any unsafe commands already present. It does not repair or certify input files. Temperature, fan, acceleration and flow/speed overrides are inherited rather than independently selected.
+- The app preserves original commands, including any unsafe commands already present. It does not repair or certify input files. Temperature, fan, flow/speed overrides, pressure advance and jerk are inherited and never emitted in the added block. The earlier insertion plans print/travel acceleration separately and restores changed fields before the source needs them.
 - Browser memory and input complexity can still cause slowdowns or failures even within the 200 MB cap. A failed parse/generation does not permit export of that result. Neither the browser preview nor automated tests replace reviewing and testing on the intended printer.
 
 Before a first print, keep the original, check the insertion and its return in the diff, inspect the downloaded file in an independent G-code viewer, verify the printer/profile and clearances, and supervise the test. If the tool reports an unsupported state, re-slice with supported settings instead of deleting the blocking commands to force acceptance.
 
 Firmware references used to check supported semantics: [Marlin XY arcs](https://marlinfw.org/docs/gcode/G002-G003.html), [Klipper offsets and saved state](https://www.klipper3d.org/G-Codes.html#gcode_move). Support is deliberately narrower than those firmware command sets.
+
+## Insertion planning update
+
+The earlier entry recognizes a bounded linear approach after completed startup/auxiliary printing and wipes. It reads through model preparation before deciding what the added block must establish and restore. The clearance sample inserts before its first XY travel; the box inserts after its final wipe and before travel acceleration setup. Unsupported approaches retain the model-start fallback and report why. The original first-model eligibility checks remain in force.
+
+Independent replay regressions cover both samples, reused/partial retraction, unknown incoming XY, combined XYZ approaches, zero and larger selected lifts, feed read before a later reset, separate Marlin acceleration fields, Klipper acceleration semantics, prohibited generated setting commands, and exact byte preservation at the earlier boundary. The box replay checks all remaining first-layer model movements, including their extrusion amounts, feeds and acceleration. The existing historical release verification above predates this update.

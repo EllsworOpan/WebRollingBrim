@@ -30,12 +30,13 @@ export function createInsertion(job: ParsedJob, brim: BrimResult, mode: ExportMo
   if (!job.insertion || !brim.paths.length) throw new Error('Generate a printable brim before exporting.');
   if (brim.transitions.length !== brim.paths.length || brim.transitions[0] !== 'travel' || brim.transitions.some(kind => kind !== 'step' && kind !== 'travel')) throw new Error('The brim travel plan is incomplete. Regenerate the brim.');
   validateBrimSettings(brim.settings, job);
-  const s = job.insertion.state, p = job.settings;
+  const plan = job.insertion, s = plan.state, p = job.settings;
   const bead = extrusionPerMm(p, brim.settings.lineWidth);
-  const liftedZ = s.z + brim.settings.travelLift;
+  const liftedZ = brim.settings.travelLift === 0 ? plan.printZ : Number(n(plan.printZ + brim.settings.travelLift));
   const lines = [
     '; ROLLING_BRIM_BEGIN v1',
     `; export_mode = ${mode}`,
+    `; insertion = ${plan.kind === 'travel' ? 'before_model_travel' : 'before_model_extrusion'}`,
     `; rolling_diameter = ${n(brim.settings.diameter)}`,
     `; brim_width = ${n(brim.settings.width)}`,
     `; brim_gap = ${n(brim.settings.gap)}`,
@@ -51,6 +52,21 @@ export function createInsertion(job: ParsedJob, brim: BrimResult, mode: ExportMo
   // Eligibility already establishes G90 / M83. Leave these modes alone.
   const position = { X: s.x, Y: s.y, Z: s.z };
   let feed = s.f;
+  let retracted = s.retracted;
+  let acceleration = { ...s.acceleration };
+  // Only acceleration is changed among printer tuning settings. Fan, thermal,
+  // flow/speed overrides, pressure advance and jerk are never emitted here.
+  const setAcceleration = (field: 'print' | 'travel', value: number | null | undefined) => {
+    if (value == null || acceleration[field] === value) return;
+    if (!(Number.isFinite(value) && value > 0)) throw new Error('Invalid planned acceleration.');
+    if (job.flavor === 'klipper') {
+      lines.push(`M204 S${decimal(value)}`);
+      acceleration = { ...acceleration, print: value, travel: value };
+    } else {
+      lines.push(`M204 ${field === 'print' ? 'P' : 'T'}${decimal(value)}`);
+      acceleration = { ...acceleration, [field]: value };
+    }
+  };
   const move = (axes: Partial<Record<'X' | 'Y' | 'Z' | 'E', number>>, speed: number, exact = false) => {
     const words: string[] = [];
     for (const axis of ['X', 'Y', 'Z', 'E'] as const) {
@@ -66,23 +82,29 @@ export function createInsertion(job: ParsedJob, brim: BrimResult, mode: ExportMo
     if (feed !== nextFeed) { words.push(`F${decimal(nextFeed)}`); feed = nextFeed; }
     lines.push(`G1 ${words.join(' ')}`);
   };
-  const retract = () => move({ E: -p.retractLength }, p.retractSpeed);
-  const unretract = () => move({ E: p.retractLength }, p.unretractSpeed);
+  const setRetraction = (target: number) => {
+    const delta = Number((retracted - target).toFixed(9));
+    if (delta !== 0) move({ E: delta }, delta < 0 ? p.retractSpeed : p.unretractSpeed, true);
+    retracted = target;
+  };
   const travel = (x: number, y: number, exact = false) => {
     const target = { X: exact ? x : Number(n(x)), Y: exact ? y : Number(n(y)) };
-    if (position.X === target.X && position.Y === target.Y) return;
-    retract();
-    // Zero means no Z commands at all. Eligibility requires starting at first-layer Z.
-    if (brim.settings.travelLift > 0) move({ Z: liftedZ }, p.zSpeed);
-    move(target, p.travelSpeed, true);
-    if (brim.settings.travelLift > 0) move({ Z: s.z }, p.zSpeed, true);
-    unretract();
+    if (position.X !== target.X || position.Y !== target.Y || position.Z !== plan.printZ) {
+      setAcceleration('travel', plan.acceleration.travel);
+      // Reuse outstanding retraction and an existing lift. Never lower before XY.
+      setRetraction(Math.max(retracted, p.retractLength));
+      move({ Z: Math.max(position.Z, liftedZ) }, p.zSpeed, true);
+      move(target, p.travelSpeed, true);
+      move({ Z: plan.printZ }, p.zSpeed, true);
+    }
+    setRetraction(0);
   };
   for (const [index, path] of brim.paths.entries()) {
     if (brim.transitions[index] === 'step') {
       // Geometry has checked this entire short connector against the printable
       // region. It adds no extrusion and does not change Z or retraction state.
       lines.push('; BRIM_STEP');
+      setAcceleration('travel', plan.acceleration.travel);
       move({ X: path[0].x, Y: path[0].y }, p.travelSpeed);
     } else {
       lines.push('; BRIM_TRAVEL');
@@ -92,11 +114,35 @@ export function createInsertion(job: ParsedJob, brim: BrimResult, mode: ExportMo
       const a = path[i - 1], b = path[i];
       const extrusion = Math.hypot(b.x - a.x, b.y - a.y) * bead;
       if (extrusion < 0.000005 || (position.X === Number(n(b.x)) && position.Y === Number(n(b.y)))) continue;
+      setAcceleration('print', plan.acceleration.print);
       move({ X: b.x, Y: b.y, E: extrusion }, brim.settings.speed);
     }
   }
-  lines.push('; BRIM_RETURN');
-  travel(s.x, s.y, true);
+  if (plan.kind === 'model') {
+    lines.push('; BRIM_RETURN');
+    travel(s.x, s.y, true);
+  } else {
+    lines.push('; BRIM_HANDOFF');
+    setAcceleration('travel', plan.acceleration.travel);
+    setRetraction(Math.max(p.retractLength, plan.handoff.retracted));
+    const exitZ = Math.max(liftedZ, plan.handoff.z);
+    move({ Z: exitZ }, p.zSpeed, true);
+    if (exitZ > plan.handoff.z + 1e-9) {
+      // A larger user lift must not turn the unchanged XYZ approach into a
+      // diagonal descent through the new brim. Finish XY at clearance first;
+      // its original absolute XY command then becomes stationary.
+      move({ X: plan.handoff.x, Y: plan.handoff.y }, p.travelSpeed, true);
+      move({ Z: plan.handoff.z }, p.zSpeed, true);
+    }
+    setRetraction(plan.handoff.retracted);
+  }
+  for (const field of ['print', 'travel'] as const) {
+    const required = plan.acceleration.restore[field];
+    if (required === null && acceleration[field] !== s.acceleration[field]) throw new Error('Cannot restore an unknown acceleration.');
+    setAcceleration(field, required);
+  }
+  if (Math.abs(retracted - plan.handoff.retracted) > 1e-7 || Math.abs(position.Z - plan.handoff.z) > 1e-7
+    || (plan.kind === 'model' && (position.X !== s.x || position.Y !== s.y))) throw new Error('The brim did not reach its planned handoff state.');
   // Do not invent/reset E in standard mode. Original relative moves are unaffected;
   // the source's next G92 E (if any) removes the counter difference.
   if (mode === 'klipper') lines.push('RESTORE_GCODE_STATE NAME=ROLLING_BRIM_APP MOVE=0');

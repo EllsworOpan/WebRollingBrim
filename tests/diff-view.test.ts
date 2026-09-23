@@ -41,7 +41,7 @@ describe('continuous, folded export review', () => {
     const source = new File([Array.from({ length: original }, (_, i) => `original ${i + 1}\n`).join('')], 'large.gcode');
     const index = await indexLines(source), byteOffset = index[insertion];
     const addedLines = Array.from({ length: added }, (_, i) => `added ${i + 1}`);
-    const review: PreparedExport = { source, output: new Blob(), name: 'out.gcode', addedLines, insertionLine: insertion + 1, insertionByteOffset: byteOffset };
+    const review: PreparedExport = { source, output: new Blob(), name: 'out.gcode', addedLines, insertionLine: insertion + 1, insertionByteOffset: byteOffset, insertionDescription: 'Test insertion' };
     const sections = diffSections(original, insertion, added);
     const rows = await readReviewRows(review, index, sections, 0, diffRowCount(sections));
     expect(rows.filter(row => row.kind !== 'fold').map(row => row.text)).toEqual([

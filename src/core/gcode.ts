@@ -1,4 +1,5 @@
 import type { Bounds, ParsedJob, Point, PrinterState, PrintPath, PrintSettings, Ring } from './types';
+import { accelerationWrites, planInsertion, unknownAcceleration, type ApproachCommand } from './insertion';
 
 const NUMBER = '[-+]?(?:\\d+\\.?\\d*|\\.\\d+)';
 const modelTypes = /^(External perimeter|Perimeter|Solid infill|Internal infill|Top solid infill|Gap fill|Overhang perimeter|Bridge infill|Internal bridge infill|Thin wall)$/i;
@@ -125,7 +126,7 @@ export function parseGcode(source: string, name = 'print.gcode', byteLength?: nu
   // Missing optional values may use documented defaults. Present but corrupt
   // settings must never silently become a different printer's defaults.
   const percentKeys = ['first_layer_height', 'first_layer_extrusion_width', 'first_layer_speed'];
-  const numericKeys = [...percentKeys, 'filament_diameter', 'extrusion_multiplier', 'layer_height', 'nozzle_diameter', 'perimeter_speed', 'travel_speed', 'travel_speed_z', 'retract_length', 'retract_speed', 'deretract_speed', 'retract_lift', 'filament_retract_length', 'filament_retract_speed', 'filament_deretract_speed', 'filament_retract_lift', 'raft_layers', 'max_print_height'];
+  const numericKeys = [...percentKeys, 'filament_diameter', 'extrusion_multiplier', 'layer_height', 'nozzle_diameter', 'perimeter_speed', 'travel_speed', 'travel_speed_z', 'retract_length', 'retract_speed', 'deretract_speed', 'retract_lift', 'filament_retract_length', 'filament_retract_speed', 'filament_deretract_speed', 'filament_retract_lift', 'raft_layers', 'max_print_height', 'first_layer_acceleration'];
   for (const key of numericKeys) {
     if (!(key in config)) continue;
     const value = config[key].split(',')[0].trim();
@@ -144,6 +145,7 @@ export function parseGcode(source: string, name = 'print.gcode', byteLength?: nu
   if (![settings.travelSpeed, settings.zSpeed, settings.retractSpeed, settings.unretractSpeed, settings.printSpeed].every(value => Number.isFinite(value) && value > 0) || !Number.isFinite(settings.retractLength) || settings.retractLength < 0 || settings.zHop < 0 || !Number.isFinite(settings.zHop)) blockers.add('The footer contains invalid travel or retraction settings.');
   if (!(settings.lineWidth >= settings.layerHeight && settings.lineWidth <= 5)) blockers.add('The footer contains an invalid first-layer extrusion width.');
   if ('max_print_height' in config && !(Number(config.max_print_height) > 0)) blockers.add('The footer contains an invalid maximum print height.');
+  if ('first_layer_acceleration' in config && Number(config.first_layer_acceleration) < 0) blockers.add('The footer contains an invalid first-layer acceleration.');
   if (!('retract_lift' in config) && !('filament_retract_lift' in config)) warnings.add('Travel lift is not specified in the footer. The brim starts with lift disabled; adjust it in Print settings.');
 
   let x = NaN, y = NaN, z = NaN, e = 0, f = NaN, retracted = 0, eKnown = false;
@@ -153,6 +155,9 @@ export function parseGcode(source: string, name = 'print.gcode', byteLength?: nu
   let absoluteXYZ = true, absoluteE = true, layer = 0, lineNo = 0, type = 'Custom';
   let width = settings.lineWidth, height = settings.layerHeight, firstLayerZ = NaN;
   let insertion: ParsedJob['insertion'] = null;
+  let acceleration = unknownAcceleration();
+  let approach: ApproachCommand[] = [];
+  const snapshot = (): PrinterState => ({ x, y, z, e, f, eKnown, absoluteXYZ, absoluteE, retracted, type, width, height, acceleration });
   let active: PrintPath | null = null;
   const paths: PrintPath[] = [], tools = new Set<number>();
   const bounds: Bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
@@ -169,7 +174,7 @@ export function parseGcode(source: string, name = 'print.gcode', byteLength?: nu
   while ((match = linePattern.exec(source)) && match[0]) {
     lineNo++;
     const raw = match[1].replace(/^\uFEFF/, '').trim();
-    if (raw === ';LAYER_CHANGE') { layer++; active = null; continue; }
+    if (raw === ';LAYER_CHANGE') { layer++; active = null; approach = []; continue; }
     if (raw.startsWith(';TYPE:')) { type = raw.slice(6).trim(); active = null; continue; }
     if (raw.startsWith(';WIDTH:')) { const n = Number(raw.slice(7)); if (n > 0 && Number.isFinite(n)) width = n; else if (layer === 1) blockers.add('Invalid first-layer WIDTH annotation.'); active = null; continue; }
     if (raw.startsWith(';HEIGHT:')) { const n = Number(raw.slice(8)); if (n > 0 && Number.isFinite(n)) height = n; else if (layer === 1) blockers.add('Invalid first-layer HEIGHT annotation.'); active = null; continue; }
@@ -179,10 +184,18 @@ export function parseGcode(source: string, name = 'print.gcode', byteLength?: nu
     const code = raw.split(';')[0].trim();
     const command = code.match(/^([GMT]\d+(?:\.\d+)?)(?:\s|[XYZEFIJKRSPT]|$)/i)?.[1].toUpperCase();
     if (!command) {
+      approach = [];
+      if (/^SET_VELOCITY_LIMIT\b/i.test(code) && /\bACCEL\s*=/i.test(code)) {
+        const value = code.match(new RegExp(`\\bACCEL=(${NUMBER})(?:\\s|$)`, 'i'));
+        const numeric = value ? Number(value[1]) : NaN;
+        const known = (code.match(/\bACCEL\s*=/gi)?.length === 1) && Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+        acceleration = { ...acceleration, print: known, travel: known };
+      }
       if (!firstModelSeen && /^(SET_GCODE_OFFSET|SET_KINEMATIC_POSITION|SET_STEPPER_CARRIAGES|FORCE_MOVE|SET_EXTRUDER_ROTATION_DISTANCE|SYNC_EXTRUDER_MOTION|ACTIVATE_EXTRUDER)\b/i.test(code)) blockers.add('Explicit printer transforms or extruder changes before insertion are not supported for export.');
       if (checkExtrusionCounter && !neutralMacro.test(code)) standardProblem(`Line ${lineNo}: ${code.split(/\s/)[0]} may use the E counter before the original file resets it. Choose Klipper state restore for a Klipper file, or re-slice without this dependency.`);
       if (!firstModelSeen && !neutralMacro.test(code) && !/^SAVE_GCODE_STATE\b/.test(code)) {
         x = NaN; y = NaN; z = NaN; f = NaN; e = 0; eKnown = false; retracted = 0; xyzModeKnown = false; eModeKnown = false; unitsKnown = false;
+        acceleration = unknownAcceleration();
       }
       if (layer === 0 && /^(PRINT_START|PURGE_LINE|START_PRINT|WARMUP)\b/.test(code)) warnings.add('Startup macros are preserved. Their purge paths and internal movements are not visible in this file.');
       if (layer === 1 && !neutralMacro.test(code) && !/^SAVE_GCODE_STATE\b/.test(code)) blockers.add('A custom macro in the first layer prevents reliable geometry and position recovery.');
@@ -191,11 +204,12 @@ export function parseGcode(source: string, name = 'print.gcode', byteLength?: nu
     const args: Record<string, number> = {};
     for (const param of code.slice(command.length).matchAll(parameterPattern)) args[param[1].toUpperCase()] = Number(param[2]);
     const motionCommand = ['G0', 'G1', 'G2', 'G3'].includes(command);
+    if (!['G0', 'G1', 'M204'].includes(command)) approach = [];
     // Consume the entire motion tail. Regex searches alone can interpret text in
     // comments, duplicate axes, or a second command as if it were valid motion.
-    if (motionCommand || ['G92', 'G90', 'G91', 'G21', 'M82', 'M83'].includes(command)) {
+    if (motionCommand || ['G92', 'G90', 'G91', 'G21', 'M82', 'M83', 'M204'].includes(command)) {
       const tail = code.slice(command.length), seen = new Set<string>();
-      const allowed = command === 'G2' || command === 'G3' ? 'XYZEFIJR' : command === 'G92' ? 'XYZE' : motionCommand ? 'XYZEF' : '';
+      const allowed = command === 'M204' ? 'SPRT' : command === 'G2' || command === 'G3' ? 'XYZEFIJR' : command === 'G92' ? 'XYZE' : motionCommand ? 'XYZEF' : '';
       let cursor = 0;
       while (cursor < tail.length) {
         if (/\s/.test(tail[cursor])) { cursor++; continue; }
@@ -207,6 +221,11 @@ export function parseGcode(source: string, name = 'print.gcode', byteLength?: nu
         seen.add(key); cursor = strictWord.lastIndex;
       }
       if ('F' in args && args.F <= 0) blockers.add('Motion feed rates must be positive.');
+      if (command === 'M204' && Object.values(args).some(value => value <= 0)) blockers.add('Explicit acceleration values must be positive.');
+    }
+    if (command === 'M204') {
+      if (!firstModelSeen && layer === 1) approach.push({ command, args, index: match.index, line: lineNo, before: snapshot(), modesKnown: xyzModeKnown && eModeKnown && unitsKnown });
+      acceleration = { ...acceleration, ...accelerationWrites(args, flavor) };
     }
     if (checkExtrusionCounter && !motionCommand && !neutralCommand.test(command) && !['G90', 'G91', 'G92'].includes(command)) {
       // Shutdown commands do not depend on the logical E counter.
@@ -247,7 +266,7 @@ export function parseGcode(source: string, name = 'print.gcode', byteLength?: nu
       continue;
     }
     if (!motionCommand) continue;
-    const before: PrinterState = { x, y, z, e, f, eKnown, absoluteXYZ, absoluteE, retracted, type, width, height };
+    const before = snapshot();
     if ('F' in args) f = args.F;
     const next = (axis: string, previous: number) => axis in args ? args[axis] + (absoluteXYZ ? 0 : previous) : previous;
     const nx = next('X', x), ny = next('Y', y), nz = next('Z', z);
@@ -262,13 +281,10 @@ export function parseGcode(source: string, name = 'print.gcode', byteLength?: nu
     if (!firstModelSeen && layer === 1 && modelTypes.test(type) && de > 1e-7 && ('X' in args || 'Y' in args || command === 'G2' || command === 'G3') && (motion || ![x, y].every(Number.isFinite))) {
       firstModelSeen = true;
       if (!Number.isFinite(firstLayerZ)) firstLayerZ = nz;
-      // Snapshot BEFORE this exact command, including settings after the skirt.
-      // Never skip an incompatible first model move and insert farther into it.
-      insertion = {
-        byteOffset: new TextEncoder().encode(source.slice(0, match.index)).byteLength,
-        line: lineNo, state: before,
-        nextMoveFeed: Number.isFinite(args.F) && args.F > 0 ? args.F : null,
-      };
+      // The first model move remains the eligibility anchor. Only now do we
+      // have enough lookahead to plan an earlier entry and its continuation.
+      insertion = planInsertion(source, approach, { command, args, index: match.index, line: lineNo, before,
+        modesKnown: xyzModeKnown && eModeKnown && unitsKnown }, flavor, configNumber(config, 'first_layer_acceleration', 0));
       checkExtrusionCounter = true;
       if (!unitsKnown) blockers.add('An explicit G21 is required before model extrusion; millimetres cannot be assumed.');
       if (!xyzModeKnown || !before.absoluteXYZ) blockers.add('Absolute XYZ positioning (G90) must be established before the first model extrusion.');
@@ -276,6 +292,15 @@ export function parseGcode(source: string, name = 'print.gcode', byteLength?: nu
       if (![before.x, before.y, before.z, before.f].every(Number.isFinite) || before.f <= 0) blockers.add('XYZ position and feed rate must be known before the first model extrusion.');
       if (before.retracted > 0.00001) blockers.add('The first model extrusion starts with outstanding retraction. A separate unretract move is required before it.');
       if (Math.abs(before.z - firstLayerZ) > 0.002) blockers.add('The nozzle must already be at first-layer Z before model extrusion.');
+    }
+    if (!firstModelSeen && layer === 1) {
+      // Wipes (including their final negative E) must finish before insertion.
+      // Retain only a bounded, non-depositing transition for lookahead.
+      if (de < 0 || (('X' in args || 'Y' in args) && 'E' in args) || !['G0', 'G1'].includes(command)) approach = [];
+      else {
+        approach.push({ command, args, index: match.index, line: lineNo, before, modesKnown: xyzModeKnown && eModeKnown && unitsKnown });
+        if (approach.length > 1000) approach = [];
+      }
     }
     if (deposited > 1e-7 && motion && [x, y, nx, ny, nz].every(Number.isFinite)) {
       addBounds({ x, y }); addBounds({ x: nx, y: ny });

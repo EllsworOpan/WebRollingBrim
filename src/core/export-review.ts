@@ -8,6 +8,7 @@ export interface PreparedExport {
   addedLines: string[];
   insertionLine: number;
   insertionByteOffset: number;
+  insertionDescription: string;
 }
 
 /** The review and download share this immutable output; never regenerate on download. */
@@ -22,6 +23,7 @@ export function prepareExport(source: File, job: ParsedJob, brim: BrimResult, mo
     addedLines: added.split(job.newline).slice(0, -1),
     insertionLine: line,
     insertionByteOffset: byteOffset,
+    insertionDescription: job.insertion!.reason,
   };
 }
 

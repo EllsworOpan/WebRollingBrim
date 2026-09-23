@@ -79,8 +79,8 @@ describe('PrusaSlicer box command reference', () => {
     expect(referenceSteps).toHaveLength(10);
     expect(new Set(referenceSteps.map(move => move.f))).toEqual(new Set([18000]));
     expect(referenceSteps.every(move => move.xy > 0.43 && move.xy < 0.45)).toBe(true);
-    const loops = added.slice(added.indexOf('; BRIM_STEP'), added.indexOf('; BRIM_RETURN'));
-    const steps = [...loops.matchAll(/; BRIM_STEP\r?\n([^\r\n]+)\r?\n([^\r\n]+)/g)];
+    const loops = added.slice(added.indexOf('; BRIM_STEP'), added.indexOf('; BRIM_HANDOFF'));
+    const steps = [...loops.matchAll(/; BRIM_STEP\r?\nM204 S4000\r?\n([^\r\n]+)\r?\nM204 S286\r?\n([^\r\n]+)/g)];
     expect(steps).toHaveLength(referenceSteps.length);
     for (const [, step, extrusion] of steps) {
       expect(step).toMatch(/^G1(?: [XY][-\d.]+)+ F18000$/);
@@ -89,20 +89,25 @@ describe('PrusaSlicer box command reference', () => {
     expect(loops).not.toMatch(/\bZ[-\d.]|\bE-/);
   });
 
-  it('preserves the box continuation, including required feed restoration and later feature changes', () => {
-    expect(originalState).toMatchObject({ x: 191.623, y: 191.623, z: 0.2, f: 1200,
-      acceleration: 286, absoluteXYZ: true, absoluteE: false, type: 'Perimeter', width: 0.479999, height: 0.2 });
-    // The standalone source F1200 is before insertion, not on the resumed move.
-    expect(prefix.trimEnd()).toMatch(/G1 F1200$/);
-    expect(job.insertion!.nextMoveFeed).toBeNull();
-    expect(suffix.split(/\r?\n/)[0]).toBe('G1 X158.377 Y191.623 E1.14785');
-    expect(added.split(/\r?\n/).filter(line => /^G1 F/.test(line))).toEqual(['G1 F1200']);
-    expect(generated.state).toEqual({ ...originalState, e: generated.state.e });
+  it('hands back to the original approach and preserves all subsequent model movements', () => {
+    expect(originalState).toMatchObject({ x: 161.345, y: 157.381, z: 0.2, f: 14400,
+      acceleration: 1714, absoluteXYZ: true, absoluteE: false, type: 'Skirt/Brim', width: 0.48, height: 0.2 });
+    expect(prefix.trimEnd()).toMatch(/;WIPE_END$/);
+    expect(job.insertion!.nextMoveFeed).toBe(18000);
+    expect(suffix.split(/\r?\n/)[0]).toBe('M204 S4000');
+    expect(added.split(/\r?\n/).filter(line => /^G1 F/.test(line))).toEqual([]);
+    expect(generated.state.z).toBe(0.998);
     expect(generated.state.e).toBeGreaterThan(originalState.e);
+    const preparation = suffix.slice(0, suffix.indexOf('G1 X158.377 Y191.623 E1.14785'));
+    const originalModel = trace(preparation, originalState).state;
+    const resumedModel = trace(preparation, generated.state).state;
+    expect(resumedModel).toEqual({ ...originalModel, e: resumedModel.e });
+    const resumedApproach = trace(preparation, generated.state).moves[0];
+    expect(resumedApproach).toMatchObject({ x: 191.623, y: 191.623, z: 0.998, dz: 0, e: 0, f: 18000, acceleration: 4000 });
     // Replay through the perimeter -> external perimeter -> infill transitions.
-    const restOfFirstLayer = suffix.slice(0, suffix.indexOf(';LAYER_CHANGE'));
-    const originalMoves = trace(restOfFirstLayer, originalState).moves;
-    const resumedMoves = trace(restOfFirstLayer, generated.state).moves;
+    const restOfFirstLayer = suffix.slice(preparation.length, suffix.indexOf(';LAYER_CHANGE'));
+    const originalMoves = trace(restOfFirstLayer, originalModel).moves;
+    const resumedMoves = trace(restOfFirstLayer, resumedModel).moves;
     expect(resumedMoves).toEqual(originalMoves);
     expect(originalMoves[0]).toMatchObject({ f: 1200, acceleration: 286, e: 1.14785 });
     expect(originalMoves.find(move => move.type === 'Solid infill' && move.e > 0)).toMatchObject({ f: 6000 });
@@ -111,19 +116,19 @@ describe('PrusaSlicer box command reference', () => {
     expect(output.slice(offset + insertionLength)).toEqual(bytes.slice(offset));
   });
 
-  it('documents inherited acceleration and explicit retraction instead of claiming identical command sequences', () => {
+  it('uses the source print/travel accelerations and reuses the completed wipe retraction', () => {
     const referenceSteps = reference.filter(move => move.xy > 0 && move.dz === 0 && move.e === 0);
     expect(new Set(referenceSteps.map(move => move.acceleration))).toEqual(new Set([4000]));
     expect(new Set(reference.filter(move => move.e > 0 && move.xy > 0).map(move => move.acceleration))).toEqual(new Set([286]));
-    expect(added).not.toMatch(/^M204\b/m);
-    expect(new Set(generated.moves.map(move => move.acceleration))).toEqual(new Set([286]));
+    expect(new Set(generated.moves.filter(move => move.e > 0 && move.xy > 0).map(move => move.acceleration))).toEqual(new Set([286]));
+    expect(new Set(generated.moves.filter(move => move.xy > 0 && move.e === 0).map(move => move.acceleration))).toEqual(new Set([4000]));
     const retracts = generated.moves.filter(move => move.e < 0);
-    expect(retracts).toHaveLength(2); // entry and return only
+    expect(retracts).toHaveLength(1); // source already retracted on entry
     expect(retracts.every(move => move.e === -0.8 && move.xy === 0 && move.f === 3000)).toBe(true);
     expect(generated.moves.filter(move => move.e > 0 && move.xy === 0).every(move => move.e === 0.8 && move.f === 1800)).toBe(true);
     const lifts = generated.moves.filter(move => move.dz !== 0);
-    expect(lifts).toHaveLength(4);
-    expect(lifts.every(move => Math.abs(Math.abs(move.dz) - 0.4) < 1e-9 && move.f === 600)).toBe(true);
+    expect(lifts.map(move => move.z)).toEqual([0.6, 0.2, 0.998]);
+    expect(lifts.every(move => move.f === 600)).toBe(true);
   });
 
   it('matches the reference bead width and measured extrusion per mm on straight sections', () => {

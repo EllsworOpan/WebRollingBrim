@@ -232,8 +232,9 @@ export function validateBrimSettings(settings: BrimSettings, job: ParsedJob) {
   }
   if (typeof settings.holes !== 'boolean' || typeof settings.pockets !== 'boolean') throw new Error('Invalid region switches.');
   const maxHeight = Number(job.config.max_print_height);
-  const nozzleZ = job.insertion?.state.z ?? job.firstLayerZ;
-  if (Number.isFinite(maxHeight) && maxHeight > 0 && nozzleZ + settings.travelLift > maxHeight) throw new Error(`Travel lift exceeds the configured maximum print height of ${maxHeight} mm.`);
+  const plan = job.insertion;
+  const highestZ = Math.max((plan?.printZ ?? job.firstLayerZ) + settings.travelLift, plan?.state.z ?? 0, plan?.handoff.z ?? 0);
+  if (Number.isFinite(maxHeight) && maxHeight > 0 && highestZ > maxHeight) throw new Error(`Travel lift exceeds the configured maximum print height of ${maxHeight} mm.`);
 }
 
 export function generateBrim(context: GeometryContext, job: ParsedJob, settings: BrimSettings): BrimResult {
@@ -261,21 +262,39 @@ export function generateBrim(context: GeometryContext, job: ParsedJob, settings:
   const bedArea = totalArea(area);
   if (context.auxiliary.length) area = subtract(area, offset(toInt(context.auxiliary), 30));
   const avoidedArea = (bedArea - totalArea(area)) / SCALE ** 2;
-  const { paths, transitions } = planContours(free, area, settings.width, settings.lineWidth, spacing, job.insertion?.state || context.model[0][0]);
+  const plan = job.insertion;
+  const entryKnown = !!plan && [plan.state.x, plan.state.y].every(Number.isFinite);
+  const modelPositionKnown = !!plan && [plan.modelState.x, plan.modelState.y].every(Number.isFinite);
+  const seed = entryKnown ? plan!.state : modelPositionKnown ? plan!.modelState : context.model[0][0];
+  const { paths, transitions } = planContours(free, area, settings.width, settings.lineWidth, spacing, seed);
   const length = paths.reduce((sum, path) => sum + pathLength(path), 0);
   const filament = length * extrusionPerMm(job.settings, settings.lineWidth);
   // Test actual generated beads, including the configured gap, rather than the ideal polygon.
   const strokes = unionBatches(paths.flatMap(path => offset(toInt([path]), settings.lineWidth * SCALE / 2, EndType.Round)));
   const reach = offset(strokes, (Math.max(settings.gap, 0) + 0.06) * SCALE);
   const unserved = context.islands.filter(island => totalArea(intersection(toInt(flatten(island)), reach)) < 0.0001 * SCALE ** 2).map(island => island.outer);
-  let travel = 0, cursor: Point = job.insertion?.state || paths[0]?.[0] || { x: 0, y: 0 };
+  let travel = 0, cursor: Point = entryKnown ? plan!.state : paths[0]?.[0] || { x: 0, y: 0 };
   for (const path of paths) { travel += Math.hypot(path[0].x - cursor.x, path[0].y - cursor.y); cursor = path.at(-1)!; }
-  if (job.insertion) travel += Math.hypot(cursor.x - job.insertion.state.x, cursor.y - job.insertion.state.y);
-  const minutes = (length / settings.speed + travel / job.settings.travelSpeed
+  if (plan) travel += Math.hypot(cursor.x - plan.handoff.x, cursor.y - plan.handoff.y);
+  let seconds = length / settings.speed + travel / job.settings.travelSpeed
     + (transitions.filter(kind => kind === 'travel').length + 1) * (2 * settings.travelLift / job.settings.zSpeed
-      + job.settings.retractLength / job.settings.retractSpeed + job.settings.retractLength / job.settings.unretractSpeed)) / 60;
+      + job.settings.retractLength / job.settings.retractSpeed + job.settings.retractLength / job.settings.unretractSpeed);
+  if (plan?.kind === 'travel') {
+    const p = job.settings, r = Math.max(p.retractLength, plan.state.retracted);
+    const liftZ = plan.printZ + settings.travelLift, exitZ = Math.max(liftZ, plan.handoff.z);
+    const entryDz = Math.max(plan.state.z, liftZ) - plan.state.z + Math.max(plan.state.z, liftZ) - plan.printZ;
+    const exitDz = exitZ - plan.printZ + exitZ - plan.handoff.z;
+    // Replace the old entry/return estimate with the planned retraction and Z
+    // handoff. The resumed XY replaces a source travel, rather than adding one.
+    seconds += (entryDz + exitDz - 4 * settings.travelLift) / p.zSpeed
+      + (r - plan.state.retracted + Math.max(p.retractLength, plan.handoff.retracted) - 2 * p.retractLength) / p.retractSpeed
+      + (r + Math.max(p.retractLength, plan.handoff.retracted) - plan.handoff.retracted - 2 * p.retractLength) / p.unretractSpeed;
+    if (entryKnown) seconds -= Math.hypot(plan.state.x - plan.handoff.x, plan.state.y - plan.handoff.y) / p.travelSpeed;
+  }
+  const minutes = Math.max(0, seconds) / 60;
   const warnings: string[] = [];
-  if (settings.travelLift === 0) warnings.push('Travel lift is disabled. Added travel moves stay at first-layer Z.');
+  if (plan?.kind === 'travel' && !entryKnown) warnings.push('The incoming XY position is unknown after startup. The first brim travel specifies both axes; its distance is omitted from the time estimate.');
+  if (settings.travelLift === 0) warnings.push('Brim travel lift is disabled. Required source entry and handoff heights are still preserved.');
   else if (settings.travelLift < job.settings.layerHeight) warnings.push('Travel lift is smaller than the first-layer height. Inspect crossings of existing material.');
   if (!paths.length) warnings.push('No printable brim fits these settings. Try a smaller rolling diameter or a wider brim.');
   if (clippedArea > 0.05) warnings.push(`${clippedArea.toFixed(1)} mm² of brim was clipped to the printable bed.`);

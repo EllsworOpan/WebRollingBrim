@@ -84,7 +84,7 @@ export default function ExportReview({ review, onClose, onDownload }: {
         <div className="review-header-actions"><button className="button button-primary" disabled={!index || !!error} onClick={() => { onDownload(review); setDownloaded(true); }}><ArrowDownToLine size={16} />Download G-code</button><button className="icon-button" aria-label="Close export review" onClick={onClose} autoFocus><X size={21} /></button></div>
       </header>
       <div className="review-summary"><span className="diff-added-count">+{added.toLocaleString()} added</span><span className="diff-removed-count">−0 removed</span><span>0 changed</span><span className="review-preserved" role="status"><Check size={14} />{downloaded ? 'Download started · original bytes preserved' : 'Original bytes preserved'}</span></div>
-      <p className="review-location">One block, immediately before the first model extrusion at original line <strong>{review.insertionLine.toLocaleString()}</strong>. Green <b>+</b> lines are added; unchanged lines provide context.</p>
+      <p className="review-location">One block at original line <strong>{review.insertionLine.toLocaleString()}</strong>. {review.insertionDescription} Green <b>+</b> lines are added; unchanged lines provide context.</p>
       <SafetyNotice compact />
       <div className="review-controls">
         <div className="view-tabs" role="group" aria-label="Diff layout"><button className={layout === 'unified' ? 'active' : ''} aria-pressed={layout === 'unified'} onClick={() => setLayout('unified')}>Unified</button><button className={layout === 'split' ? 'active' : ''} aria-pressed={layout === 'split'} onClick={() => setLayout('split')}>Side by side</button></div>

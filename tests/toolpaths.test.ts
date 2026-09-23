@@ -149,7 +149,7 @@ describe('outside-to-model brim paths', () => {
       }
     }
     expect(planned.transitions).toEqual(['travel', ...Array(10).fill('step')]);
-    expect(retractions(createInsertion(job, planned))).toBe(2);
+    expect(retractions(createInsertion(job, planned))).toBe(1); // entry reuses the original wipe
     function deviation(a: Point[], b: Point[]) {
       let maximum = 0;
       for (let i = 1; i < a.length; i++) {
