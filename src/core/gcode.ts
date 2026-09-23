@@ -1,13 +1,9 @@
 import type { Bounds, ExportConcern, ParsedJob, Point, PrinterState, PrintPath, PrintSettings, Ring } from './types';
 import { accelerationWrites, planInsertion, unknownAcceleration, type ApproachCommand } from './insertion';
-import { inheritedSetting, startupRoutine, unsupportedTransform } from './input-commands';
+import { knownInputCommand, knownInputMacro, startupRoutine, unsupportedTransform } from './input-commands';
 
 const NUMBER = '[-+]?(?:\\d+\\.?\\d*|\\.\\d+)';
 const modelTypes = /^(External perimeter|Perimeter|Solid infill|Internal infill|Top solid infill|Gap fill|Overhang perimeter|Bridge infill|Internal bridge infill|Thin wall)$/i;
-// These commands do not read or alter the extrusion position. Other macros may
-// capture an E counter, even if they do not immediately extrude anything.
-const neutralMacro = /^(SET_PRESSURE_ADVANCE|SET_VELOCITY_LIMIT|EXCLUDE_OBJECT_DEFINE|EXCLUDE_OBJECT_START|EXCLUDE_OBJECT_END|SET_PRINT_STATS_INFO)\b/;
-const neutralCommand = /^(G4|G17|G21|G91\.1|M73|M82|M83|M104|M105|M106|M107|M109|M115|M117|M118|M140|M141|M190|M191|M200|M201|M203|M204|M205|M207|M208|M220|M221|M400|M420|M486|M555|M569|M572|M593|M862(?:\.[1-9])?|M900|T0)$/;
 
 export function configNumber(config: Record<string, string>, key: string, fallback: number): number {
   const value = config[key]?.split(',')[0]?.trim();
@@ -186,29 +182,30 @@ export function parseGcode(source: string, name = 'print.gcode', byteLength?: nu
     if (!raw || raw[0] === ';') continue;
     if (/^N\d+/i.test(raw) || /\*\d+\s*$/.test(raw.split(';')[0])) { blockers.add('Numbered or checksummed G-code cannot be modified by insertion alone.'); continue; }
     const code = raw.split(';')[0].trim();
-    const command = code.match(/^([GMT]\d+(?:\.\d+)?)(?:\s|[XYZEFIJKRSPT]|$)/i)?.[1].toUpperCase();
+    const command = code.match(/^([GMT]\d+(?:\.\d+)?)(?=\s|[A-Z](?:[-+\d.]|\s|$)|$)/i)?.[1].toUpperCase();
     if (!command) {
       approach = [];
-      if (/^SET_VELOCITY_LIMIT\b/i.test(code) && /\bACCEL\s*=/i.test(code)) {
+      const neutral = knownInputMacro(code, flavor);
+      if (neutral && /^SET_VELOCITY_LIMIT(?:\s|$)/i.test(code) && /\bACCEL\s*=/i.test(code)) {
         const value = code.match(new RegExp(`\\bACCEL=(${NUMBER})(?:\\s|$)`, 'i'));
         const numeric = value ? Number(value[1]) : NaN;
         const known = (code.match(/\bACCEL\s*=/gi)?.length === 1) && Number.isFinite(numeric) && numeric > 0 ? numeric : null;
         acceleration = { ...acceleration, print: known, travel: known };
       }
       if (!firstModelSeen && /^(SET_GCODE_OFFSET|SET_KINEMATIC_POSITION|SET_STEPPER_CARRIAGES|FORCE_MOVE|SET_EXTRUDER_ROTATION_DISTANCE|SYNC_EXTRUDER_MOTION|ACTIVATE_EXTRUDER)\b/i.test(code)) blockers.add('Explicit printer transforms or extruder changes before insertion are not supported for export.');
-      if (checkExtrusionCounter && !neutralMacro.test(code)) standardProblem(`Line ${lineNo}: ${code.split(/\s/)[0]} may use the E counter before the original file resets it. Choose Klipper state restore for a Klipper file, or re-slice without this dependency.`);
-      if (!firstModelSeen && !neutralMacro.test(code) && !/^SAVE_GCODE_STATE\b/.test(code)) {
+      if (checkExtrusionCounter && !neutral) standardProblem(`Line ${lineNo}: ${code.split(/\s/)[0]} may use the E counter before the original file resets it. Choose Klipper state restore for a Klipper file, or re-slice without this dependency.`);
+      if (!firstModelSeen && !neutral && !/^SAVE_GCODE_STATE(?:\s|$)/i.test(code)) {
         x = NaN; y = NaN; z = NaN; f = NaN; e = 0; eKnown = false; retracted = 0; xyzModeKnown = false; eModeKnown = false; unitsKnown = false;
         acceleration = unknownAcceleration();
       }
       if (layer === 0 && /^(PRINT_START|PURGE_LINE|START_PRINT|WARMUP)\b/.test(code)) warnings.add('Startup macros are preserved. Their purge paths and internal movements are not visible in this file.');
-      if (layer === 1 && !neutralMacro.test(code) && !/^SAVE_GCODE_STATE\b/.test(code)) blockers.add('A custom macro in the first layer prevents reliable geometry and position recovery.');
+      if (layer === 1 && !neutral && !/^SAVE_GCODE_STATE(?:\s|$)/i.test(code)) blockers.add('A custom macro in the first layer prevents reliable geometry and position recovery.');
       continue;
     }
     const args: Record<string, number> = {};
     for (const param of code.slice(command.length).matchAll(parameterPattern)) args[param[1].toUpperCase()] = Number(param[2]);
     const motionCommand = ['G0', 'G1', 'G2', 'G3'].includes(command);
-    const neutral = neutralCommand.test(command) || inheritedSetting(command, flavor);
+    const neutral = knownInputCommand(command, flavor);
     const routine = layer === 0 && startupRoutine.test(command);
     if (!['G0', 'G1', 'M204'].includes(command)) approach = [];
     // Consume the entire motion tail. Regex searches alone can interpret text in
