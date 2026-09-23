@@ -48,7 +48,7 @@ describe('export diff and shared download', () => {
     expect(await indexLines(new Blob(['a\r\n']))).toEqual(new Uint32Array([0]));
   });
 
-  it('reads pages at both insertion boundaries and the end of a large source', async () => {
+  it('reads ranges at both insertion boundaries and the end of a large source', async () => {
     const source = fixtureSource() + '; unchanged\n'.repeat(400_000) + '; last';
     const { review } = prepare(source), index = await indexLines(review.source);
     const insertion = review.insertionLine - 1, added = review.addedLines.length;

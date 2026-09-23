@@ -53,23 +53,27 @@
 .diff-filenames span + span { border-left: 1px solid #344750; }
 .diff-hunk { display: flex; align-items: center; flex-wrap: wrap; gap: 18px; padding: 9px 16px; background: #192e42; color: #a4c1dc; font-size: 11px; }
 .diff-hunk code { font: 12px Consolas, monospace; }
-.diff-fold { background: #152129; color: #8ba3b0; text-align: center; font-size: 11px; padding: 7px; border-bottom: 1px solid #263741; }
+.diff-fold { display: block; width: 100%; height: 26px; line-height: 24px; background: #192e42; color: #b1cde5; text-align: left; white-space: nowrap; font-size: 11px; padding: 0 16px; border-block: 1px solid #344b60; cursor: pointer; }
+.diff-fold.fold-added { background: #213d32; color: #a6dfbb; border-color: #3a5b47; }
+.diff-fold:hover { filter: brightness(1.25); }
+.diff-fold:focus-visible { outline: 2px solid #ffb454; outline-offset: -2px; }
 .diff-column-headings { display: grid; background: #17232b; color: #96acb7; border-bottom: 1px solid #344750; font-size: 10px; padding: 7px 0; }
 .diff-column-headings.unified { grid-template-columns: 70px 70px 1fr; }
 .diff-column-headings.unified span { padding-left: 12px; }
 .diff-column-headings.split { grid-template-columns: 1fr 1fr; }
 .diff-column-headings.split span { padding-left: 16px; }
-.diff-scroller { flex: 1; min-height: 100px; overflow: auto; overscroll-behavior: contain; background: #10191e; }
-.diff-lines { font: 12px/23px Consolas, "SFMono-Regular", monospace; min-width: 100%; width: max-content; }
-.diff-row { display: grid; grid-template-columns: 70px 70px 26px minmax(0, 1fr); min-height: 23px; }
+.diff-scroller { flex: 1; min-height: 100px; overflow: auto; overflow-anchor: none; overscroll-behavior: contain; scrollbar-color: #4a6370 #16232b; background: #10191e; }
+.diff-track { position: relative; min-width: 100%; }
+.diff-lines { position: absolute; left: 0; font: 12px/26px Consolas, "SFMono-Regular", monospace; min-width: 100%; width: max-content; }
+.diff-row { display: grid; grid-template-columns: 70px 70px 26px minmax(0, 1fr); height: 26px; }
 .diff-number { color: #859da9; text-align: right; padding: 0 12px 0 5px; user-select: none; border-right: 1px solid #ffffff06; }
 .diff-sign { color: #8fcba6; text-align: center; user-select: none; }
 .diff-lines code { font: inherit; white-space: pre; padding-right: 22px; }
 .diff-lines .added { background: #153724; color: #c8eed5; }
 .diff-lines .added .diff-number { color: #8cc59d; background: #17422b; }
-.diff-split-row { display: grid; grid-template-columns: 1fr 1fr; }
+.diff-split-row { display: grid; grid-template-columns: 1fr 1fr; height: 26px; }
 .diff-lines.split { min-width: max(100%, 850px); }
-.diff-cell { display: grid; grid-template-columns: 70px 26px minmax(0, 1fr); min-height: 23px; }
+.diff-cell { display: grid; grid-template-columns: 70px 26px minmax(0, 1fr); height: 26px; }
 .diff-cell + .diff-cell { border-left: 1px solid #344750; }
 .diff-cell.empty { background: repeating-linear-gradient(-45deg, #162127, #162127 4px, #18252c 4px, #18252c 5px); }
 .diff-message { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 40px 20px; font-size: 13px; color: #a5bbc7; }
@@ -77,7 +81,6 @@
 .review-footer form { display: flex; align-items: center; gap: 8px; }
 .review-footer input { width: 88px; background: #0e181e; border: 1px solid #3c515d; border-radius: 4px; padding: 5px 7px; font-size: 12px; }
 .review-footer form button { background: #2b3a43; border-radius: 4px; padding: 6px 10px; font-size: 11px; }
-.diff-pagination { display: flex; align-items: center; gap: 8px; }
 @media(max-width:760px) {
   .safety-notice { padding: 14px 20px; font-size: 11px; }
   .safety-notice.compact { margin: 0 14px 12px; max-height: 150px; }

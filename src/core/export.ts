@@ -32,7 +32,7 @@ export function createInsertion(job: ParsedJob, brim: BrimResult, mode: ExportMo
   validateBrimSettings(brim.settings, job);
   const s = job.insertion.state, p = job.settings;
   const bead = extrusionPerMm(p, brim.settings.lineWidth);
-  const liftedZ = job.firstLayerZ + brim.settings.travelLift;
+  const liftedZ = s.z + brim.settings.travelLift;
   const lines = [
     '; ROLLING_BRIM_BEGIN v1',
     `; export_mode = ${mode}`,

@@ -231,6 +231,9 @@ export function validateBrimSettings(settings: BrimSettings, job: ParsedJob) {
     if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) throw new Error(`${key} must be between ${min} and ${max}.`);
   }
   if (typeof settings.holes !== 'boolean' || typeof settings.pockets !== 'boolean') throw new Error('Invalid region switches.');
+  const maxHeight = Number(job.config.max_print_height);
+  const nozzleZ = job.insertion?.state.z ?? job.firstLayerZ;
+  if (Number.isFinite(maxHeight) && maxHeight > 0 && nozzleZ + settings.travelLift > maxHeight) throw new Error(`Travel lift exceeds the configured maximum print height of ${maxHeight} mm.`);
 }
 
 export function generateBrim(context: GeometryContext, job: ParsedJob, settings: BrimSettings): BrimResult {

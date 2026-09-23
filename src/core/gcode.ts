@@ -56,14 +56,34 @@ function readSettings(config: Record<string, string>): PrintSettings {
 }
 
 function readBed(config: Record<string, string>): Ring {
-  return (config.bed_shape || '').split(',').map(value => {
-    const [x, y] = value.split('x').map(Number);
-    return { x, y };
-  }).filter(p => Number.isFinite(p.x) && Number.isFinite(p.y));
+  const values = (config.bed_shape || '').split(','), point = new RegExp(`^(${NUMBER})x(${NUMBER})$`);
+  if (values.some(value => !point.test(value.trim()))) return [];
+  return values.map(value => { const [x, y] = value.trim().split('x').map(Number); return { x, y }; });
+}
+
+function usableBed(bed: Ring): boolean {
+  if (bed.length < 3 || bed.length > 1000 || bed.some(p => ![p.x, p.y].every(v => Number.isFinite(v) && Math.abs(v) <= 100_000))) return false;
+  const cross = (a: Point, b: Point, c: Point) => (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+  const on = (a: Point, b: Point, c: Point) => Math.abs(cross(a, b, c)) < 1e-9 && c.x >= Math.min(a.x, b.x) && c.x <= Math.max(a.x, b.x) && c.y >= Math.min(a.y, b.y) && c.y <= Math.max(a.y, b.y);
+  let area = 0;
+  for (let i = 0; i < bed.length; i++) {
+    const a = bed[i], b = bed[(i + 1) % bed.length];
+    if (Math.hypot(a.x - b.x, a.y - b.y) < 0.001) return false;
+    area += a.x * b.y - b.x * a.y;
+    for (let j = i + 2; j < bed.length; j++) {
+      if (i === 0 && j === bed.length - 1) continue;
+      const c = bed[j], d = bed[(j + 1) % bed.length];
+      if ((cross(a, b, c) * cross(a, b, d) < 0 && cross(c, d, a) * cross(c, d, b) < 0) || on(a, b, c) || on(a, b, d) || on(c, d, a) || on(c, d, b)) return false;
+    }
+  }
+  return Math.abs(area) > 0.001;
 }
 
 /** G17 arcs, with relative I/J centres or signed R. Chord error is at most 0.01 mm. */
 export function arcPoints(start: Point, end: Point, args: Record<string, number>, clockwise: boolean): Ring {
+  if ('R' in args && ('I' in args || 'J' in args)) throw new Error('Mixed radius/centre arc formats are not supported.');
+  if (Object.keys(args).some(key => !'XYZEFIJR'.includes(key))) throw new Error('Unsupported arc parameters in the first layer.');
+  if (!Object.values(args).every(Number.isFinite)) throw new Error('An arc contains a non-finite value.');
   let center: Point;
   if ('I' in args || 'J' in args) {
     center = { x: start.x + (args.I || 0), y: start.y + (args.J || 0) };
@@ -102,6 +122,16 @@ export function parseGcode(source: string, name = 'print.gcode', byteLength?: nu
   for (const key of ['filament_diameter', 'extrusion_multiplier', 'first_layer_height', 'first_layer_extrusion_width', 'first_layer_speed', 'retract_length', 'retract_speed', 'travel_speed']) {
     if (!(key in config)) blockers.add(`The PrusaSlicer footer is missing ${key}.`);
   }
+  // Missing optional values may use documented defaults. Present but corrupt
+  // settings must never silently become a different printer's defaults.
+  const percentKeys = ['first_layer_height', 'first_layer_extrusion_width', 'first_layer_speed'];
+  const numericKeys = [...percentKeys, 'filament_diameter', 'extrusion_multiplier', 'layer_height', 'nozzle_diameter', 'perimeter_speed', 'travel_speed', 'travel_speed_z', 'retract_length', 'retract_speed', 'deretract_speed', 'retract_lift', 'filament_retract_length', 'filament_retract_speed', 'filament_deretract_speed', 'filament_retract_lift', 'raft_layers', 'max_print_height'];
+  for (const key of numericKeys) {
+    if (!(key in config)) continue;
+    const value = config[key].split(',')[0].trim();
+    if (key.startsWith('filament_') && key !== 'filament_diameter' && value === 'nil') continue;
+    if (!new RegExp(`^${NUMBER}${percentKeys.includes(key) ? '%?' : ''}$`).test(value) || !Number.isFinite(Number(value.replace(/%$/, '')))) blockers.add(`The footer contains an invalid numeric setting: ${key}.`);
+  }
   if (config.use_volumetric_e === '1') blockers.add('Volumetric extrusion is not supported for export.');
   if (config.use_firmware_retraction === '1') blockers.add('Firmware retraction is not supported for export.');
   if (config.complete_objects === '1') blockers.add('Sequential object printing is not supported for export.');
@@ -109,9 +139,11 @@ export function parseGcode(source: string, name = 'print.gcode', byteLength?: nu
   if (config.spiral_vase === '1') blockers.add('Spiral vase G-code is not supported for export.');
   if (source.includes('; ROLLING_BRIM_BEGIN')) blockers.add('This file already contains a rolling brim. Load the original file to change it.');
   const bed = readBed(config);
-  if (bed.length < 3) blockers.add('The footer has no usable bed shape.');
+  if (!usableBed(bed)) blockers.add('The footer has no usable bed shape: a finite, simple polygon is required.');
   if (!(settings.layerHeight > 0 && settings.layerHeight < 2 && settings.filamentDiameter >= 1 && settings.filamentDiameter <= 4 && settings.flow > 0 && settings.flow < 3)) blockers.add('The footer contains invalid extrusion settings.');
-  if (![settings.travelSpeed, settings.zSpeed, settings.retractSpeed, settings.unretractSpeed].every(value => Number.isFinite(value) && value > 0) || settings.retractLength < 0) blockers.add('The footer contains invalid travel or retraction settings.');
+  if (![settings.travelSpeed, settings.zSpeed, settings.retractSpeed, settings.unretractSpeed, settings.printSpeed].every(value => Number.isFinite(value) && value > 0) || !Number.isFinite(settings.retractLength) || settings.retractLength < 0 || settings.zHop < 0 || !Number.isFinite(settings.zHop)) blockers.add('The footer contains invalid travel or retraction settings.');
+  if (!(settings.lineWidth >= settings.layerHeight && settings.lineWidth <= 5)) blockers.add('The footer contains an invalid first-layer extrusion width.');
+  if ('max_print_height' in config && !(Number(config.max_print_height) > 0)) blockers.add('The footer contains an invalid maximum print height.');
   if (!('retract_lift' in config) && !('filament_retract_lift' in config)) warnings.add('Travel lift is not specified in the footer. The brim starts with lift disabled; adjust it in Print settings.');
 
   let x = NaN, y = NaN, z = NaN, e = 0, f = NaN, retracted = 0, eKnown = false;
@@ -127,6 +159,8 @@ export function parseGcode(source: string, name = 'print.gcode', byteLength?: nu
   const newline = source.match(/\r\n|\n|\r/)?.[0] || '\n';
   const linePattern = /([^\r\n]*)(?:\r\n|\n|\r|$)/g;
   const parameterPattern = new RegExp(`([A-Z])\\s*(${NUMBER})`, 'gi');
+  const strictWord = new RegExp(`([A-Z])\\s*(${NUMBER})`, 'iy');
+  const syntaxProblem = () => blockers.add('Ambiguous or unsupported motion syntax. Use ordinary numeric PrusaSlicer commands, one per line, without duplicate parameters or parenthesized comments.');
   const addBounds = (p: Point) => {
     bounds.minX = Math.min(bounds.minX, p.x); bounds.maxX = Math.max(bounds.maxX, p.x);
     bounds.minY = Math.min(bounds.minY, p.y); bounds.maxY = Math.max(bounds.maxY, p.y);
@@ -137,14 +171,15 @@ export function parseGcode(source: string, name = 'print.gcode', byteLength?: nu
     const raw = match[1].replace(/^\uFEFF/, '').trim();
     if (raw === ';LAYER_CHANGE') { layer++; active = null; continue; }
     if (raw.startsWith(';TYPE:')) { type = raw.slice(6).trim(); active = null; continue; }
-    if (raw.startsWith(';WIDTH:')) { const n = Number(raw.slice(7)); if (n > 0) width = n; active = null; continue; }
-    if (raw.startsWith(';HEIGHT:')) { const n = Number(raw.slice(8)); if (n > 0) height = n; active = null; continue; }
+    if (raw.startsWith(';WIDTH:')) { const n = Number(raw.slice(7)); if (n > 0 && Number.isFinite(n)) width = n; else if (layer === 1) blockers.add('Invalid first-layer WIDTH annotation.'); active = null; continue; }
+    if (raw.startsWith(';HEIGHT:')) { const n = Number(raw.slice(8)); if (n > 0 && Number.isFinite(n)) height = n; else if (layer === 1) blockers.add('Invalid first-layer HEIGHT annotation.'); active = null; continue; }
     if (raw.startsWith(';Z:') && layer === 1) { firstLayerZ = Number(raw.slice(3)); continue; }
     if (!raw || raw[0] === ';') continue;
-    if (/^N\d+\s/i.test(raw) || /\*\d+\s*$/.test(raw)) { blockers.add('Numbered or checksummed G-code cannot be modified by insertion alone.'); continue; }
+    if (/^N\d+/i.test(raw) || /\*\d+\s*$/.test(raw.split(';')[0])) { blockers.add('Numbered or checksummed G-code cannot be modified by insertion alone.'); continue; }
     const code = raw.split(';')[0].trim();
     const command = code.match(/^([GMT]\d+(?:\.\d+)?)(?:\s|[XYZEFIJKRSPT]|$)/i)?.[1].toUpperCase();
     if (!command) {
+      if (!firstModelSeen && /^(SET_GCODE_OFFSET|SET_KINEMATIC_POSITION|SET_STEPPER_CARRIAGES|FORCE_MOVE|SET_EXTRUDER_ROTATION_DISTANCE|SYNC_EXTRUDER_MOTION|ACTIVATE_EXTRUDER)\b/i.test(code)) blockers.add('Explicit printer transforms or extruder changes before insertion are not supported for export.');
       if (checkExtrusionCounter && !neutralMacro.test(code)) standardProblem(`Line ${lineNo}: ${code.split(/\s/)[0]} may use the E counter before the original file resets it. Choose Klipper state restore for a Klipper file, or re-slice without this dependency.`);
       if (!firstModelSeen && !neutralMacro.test(code) && !/^SAVE_GCODE_STATE\b/.test(code)) {
         x = NaN; y = NaN; z = NaN; f = NaN; e = 0; eKnown = false; retracted = 0; xyzModeKnown = false; eModeKnown = false; unitsKnown = false;
@@ -156,11 +191,29 @@ export function parseGcode(source: string, name = 'print.gcode', byteLength?: nu
     const args: Record<string, number> = {};
     for (const param of code.slice(command.length).matchAll(parameterPattern)) args[param[1].toUpperCase()] = Number(param[2]);
     const motionCommand = ['G0', 'G1', 'G2', 'G3'].includes(command);
+    // Consume the entire motion tail. Regex searches alone can interpret text in
+    // comments, duplicate axes, or a second command as if it were valid motion.
+    if (motionCommand || ['G92', 'G90', 'G91', 'G21', 'M82', 'M83'].includes(command)) {
+      const tail = code.slice(command.length), seen = new Set<string>();
+      const allowed = command === 'G2' || command === 'G3' ? 'XYZEFIJR' : command === 'G92' ? 'XYZE' : motionCommand ? 'XYZEF' : '';
+      let cursor = 0;
+      while (cursor < tail.length) {
+        if (/\s/.test(tail[cursor])) { cursor++; continue; }
+        strictWord.lastIndex = cursor;
+        const word = strictWord.exec(tail);
+        if (!word) { syntaxProblem(); break; }
+        const key = word[1].toUpperCase();
+        if (!allowed.includes(key) || seen.has(key) || !Number.isFinite(Number(word[2]))) syntaxProblem();
+        seen.add(key); cursor = strictWord.lastIndex;
+      }
+      if ('F' in args && args.F <= 0) blockers.add('Motion feed rates must be positive.');
+    }
     if (checkExtrusionCounter && !motionCommand && !neutralCommand.test(command) && !['G90', 'G91', 'G92'].includes(command)) {
       // Shutdown commands do not depend on the logical E counter.
       if (!['G28', 'M18', 'M84', 'M2'].includes(command)) standardProblem(`Line ${lineNo}: cannot establish that ${command} is independent of the E counter before its next reset.`);
     }
     if (!firstModelSeen && !motionCommand && !neutralCommand.test(command) && !['G90', 'G91', 'G92', 'G28', 'G29', 'G80', 'M18', 'M84'].includes(command)) blockers.add(`Command ${command} before model extrusion is not supported for state recovery.`);
+    if (layer === 1 && !motionCommand && !neutralCommand.test(command) && !['G90', 'G91', 'G92'].includes(command) && !(type === 'Custom' && ['G28', 'M18', 'M84', 'M2'].includes(command))) blockers.add(`Command ${command} within first-layer features is not supported for geometry recovery.`);
     if (command.startsWith('T')) tools.add(Number(command.slice(1)));
     if (command === 'G20') blockers.add('Inch-based G-code is not supported.');
     if (command === 'G21') unitsKnown = true;
