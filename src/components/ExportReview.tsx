@@ -18,9 +18,29 @@ export default function ExportReview({ review, onClose, onDownload }: {
   const [viewport, setViewport] = useState({ top: 0, height: 400 });
   const [downloaded, setDownloaded] = useState(false);
   const [accepted, setAccepted] = useState<string[]>([]), [confirming, setConfirming] = useState(false);
+  const [showAcknowledged, setShowAcknowledged] = useState(false);
+  const [minorOpen, setMinorOpen] = useState(false), [minorAcknowledged, setMinorAcknowledged] = useState(false);
+  const concernPanel = useRef<HTMLElement>(null), acknowledgementChanged = useRef(false);
   const concerns = review.concerns || [];
-  const acceptedAll = concerns.every(issue => accepted.includes(issue.id));
-  useEffect(() => { setAccepted([]); setConfirming(false); setDownloaded(false); }, [review]);
+  const pendingConcerns = concerns.filter(issue => !accepted.includes(issue.id));
+  const acknowledgedConcerns = concerns.filter(issue => accepted.includes(issue.id));
+  const acceptedAll = pendingConcerns.length === 0;
+  useEffect(() => {
+    setAccepted([]); setConfirming(false); setDownloaded(false);
+    setShowAcknowledged(false); setMinorOpen(false); setMinorAcknowledged(false);
+  }, [review]);
+  const acknowledge = (id: string, value: boolean) => {
+    acknowledgementChanged.current = true;
+    setAccepted(previous => value ? [...new Set([...previous, id])] : previous.filter(item => item !== id));
+    setShowAcknowledged(false);
+  };
+  useLayoutEffect(() => {
+    if (!acknowledgementChanged.current) return;
+    acknowledgementChanged.current = false;
+    // The action's card disappears. Keep keyboard focus in the review flow:
+    // next pending concern, or the compact summary when all are acknowledged.
+    concernPanel.current?.querySelector<HTMLButtonElement>('.concern-action, .acknowledged-toggle')?.focus();
+  }, [accepted]);
   const insertion = review.insertionLine - 1, added = review.addedLines.length;
   const total = (index?.length ?? 0) + added;
   const sections = useMemo(() => index ? diffSections(index.length, insertion, added, expanded) : [], [index, insertion, added, expanded]);
@@ -91,13 +111,37 @@ export default function ExportReview({ review, onClose, onDownload }: {
       </header>
       <div className="review-summary"><span className="diff-added-count">+{added.toLocaleString()} added</span><span className="diff-removed-count">−0 removed</span><span>0 changed</span><span className="review-preserved" role="status"><Check size={14} />{downloaded && 'Download started · '}{review.format === 'bgcode' ? 'Original commands preserved' : 'Original bytes preserved'}</span></div>
       <div className="review-context">
+      <details className="review-notes">
+      <summary>Insertion at line {review.insertionLine.toLocaleString()} · Export details and safety notice</summary>
       <p className="review-location">One block at original line <strong>{review.insertionLine.toLocaleString()}</strong>. {review.insertionDescription} Green <b>+</b> lines are added; unchanged lines provide context.</p>
       {review.format === 'bgcode' && <p className="review-location">Review shows decoded commands. Download stays .bgcode; metadata, thumbnails and untouched binary blocks are preserved.</p>}
       <SafetyNotice compact />
-      {(concerns.length > 0 || !!review.warnings?.length) && <details className="review-issues" open={concerns.length > 0}>
-        <summary>{concerns.length ? `${concerns.length} unresolved concerns — acceptance required` : `${review.warnings!.length} minor concerns — export allowed`}</summary>
-        <ExportConcerns concerns={concerns} accepted={accepted} onAccept={(id, value) => setAccepted(previous => value ? [...previous, id] : previous.filter(item => item !== id))} />
-        {!!review.warnings?.length && <ul>{review.warnings.map(warning => <li key={warning}>{warning}</li>)}</ul>}
+      </details>
+      {concerns.length > 0 && <section ref={concernPanel} className={`review-issues${acceptedAll ? ' acknowledged' : ''}`} aria-label="Export assumptions">
+        <p className="concern-status" role="status">{pendingConcerns.length
+          ? `${pendingConcerns.length} ${pendingConcerns.length === 1 ? 'concern requires' : 'concerns require'} acknowledgement`
+          : 'All assumptions acknowledged — final confirmation required'}</p>
+        {pendingConcerns.length > 0 && <>
+          <p className="concern-instructions">Acknowledging accepts the assumption for this export and collapses its details.</p>
+          <ExportConcerns concerns={pendingConcerns} onAccept={acknowledge} />
+        </>}
+        {acknowledgedConcerns.length > 0 && <>
+          <button className="acknowledged-toggle" aria-expanded={showAcknowledged} aria-controls="acknowledged-concerns"
+            onClick={() => setShowAcknowledged(value => !value)}>
+            {acknowledgedConcerns.length} acknowledged · {showAcknowledged ? 'Hide details' : 'Show details'}
+          </button>
+          <div id="acknowledged-concerns" hidden={!showAcknowledged}>
+            <ExportConcerns concerns={acknowledgedConcerns} accepted={accepted} onAccept={acknowledge} />
+          </div>
+        </>}
+      </section>}
+      {!!review.warnings?.length && <details className="review-issues" open={minorOpen} onToggle={event => setMinorOpen(event.currentTarget.open)}>
+        <summary>{minorAcknowledged ? `${review.warnings.length} minor concerns acknowledged` : `${review.warnings.length} minor concerns — export allowed`}</summary>
+        <ul>{review.warnings.map(warning => <li key={warning}>{warning}</li>)}</ul>
+        {!minorAcknowledged && <button className="button concern-action" onClick={event => {
+          setMinorAcknowledged(true); setMinorOpen(false);
+          event.currentTarget.closest('details')?.querySelector('summary')?.focus();
+        }}>Acknowledge and collapse minor concerns</button>}
       </details>}
       </div>
       <div className="review-controls">
